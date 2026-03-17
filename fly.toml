@@ -1,3 +1,8 @@
+# fly.toml app configuration file generated for dyarchy on 2026-03-17T11:56:16-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
 app = 'dyarchy'
 primary_region = 'iad'
 

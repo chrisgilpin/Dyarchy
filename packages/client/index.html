@@ -156,13 +156,49 @@
   <div id="lobby" style="position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);z-index:34;gap:16px;font-family:system-ui,sans-serif;">
     <h2 style="color:#fff;font-size:32px;">Lobby</h2>
     <div id="lobby-code" style="color:#0f0;font-size:24px;font-weight:bold;"></div>
-    <div id="lobby-players" style="color:#ccc;font-size:16px;margin:10px 0;"></div>
-    <div style="display:flex;gap:12px;">
-      <button id="btn-role-fps" class="role-btn">FPS<small>Shooter</small></button>
-      <button id="btn-role-rts" class="role-btn">RTS<small>Strategy</small></button>
+    <p style="color:#888;font-size:13px;">Share this code with friends to join</p>
+
+    <!-- Team/Role selection grid -->
+    <div style="display:flex;gap:24px;margin:12px 0;">
+      <!-- Blue Team -->
+      <div style="border:2px solid #2255bb;border-radius:10px;padding:16px;min-width:180px;text-align:center;">
+        <div style="color:#4488dd;font-size:18px;font-weight:bold;margin-bottom:12px;">Blue Team</div>
+        <button class="lobby-slot" data-team="1" data-role="fps" style="display:block;width:100%;padding:10px;margin-bottom:8px;background:rgba(34,85,187,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+          FPS <span style="color:#888;font-size:12px;">— Shooter</span>
+          <div class="slot-player" style="color:#4488dd;font-size:12px;margin-top:4px;"></div>
+        </button>
+        <button class="lobby-slot" data-team="1" data-role="rts" style="display:block;width:100%;padding:10px;background:rgba(34,85,187,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+          RTS <span style="color:#888;font-size:12px;">— Strategy</span>
+          <div class="slot-player" style="color:#4488dd;font-size:12px;margin-top:4px;"></div>
+        </button>
+      </div>
+      <!-- Red Team -->
+      <div style="border:2px solid #bb2222;border-radius:10px;padding:16px;min-width:180px;text-align:center;">
+        <div style="color:#dd4444;font-size:18px;font-weight:bold;margin-bottom:12px;">Red Team</div>
+        <button class="lobby-slot" data-team="2" data-role="fps" style="display:block;width:100%;padding:10px;margin-bottom:8px;background:rgba(187,34,34,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+          FPS <span style="color:#888;font-size:12px;">— Shooter</span>
+          <div class="slot-player" style="color:#dd4444;font-size:12px;margin-top:4px;"></div>
+        </button>
+        <button class="lobby-slot" data-team="2" data-role="rts" style="display:block;width:100%;padding:10px;background:rgba(187,34,34,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+          RTS <span style="color:#888;font-size:12px;">— Strategy</span>
+          <div class="slot-player" style="color:#dd4444;font-size:12px;margin-top:4px;"></div>
+        </button>
+      </div>
     </div>
+
     <button id="btn-ready" class="role-btn" style="min-width:200px;border-color:#0f0;">Ready</button>
     <div id="lobby-status" style="color:#888;font-size:13px;"></div>
+  </div>
+
+  <!-- Swap request dialog (shown during game) -->
+  <div id="swap-dialog" style="position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:45;font-family:system-ui,sans-serif;">
+    <div style="background:rgba(20,20,30,0.95);border:2px solid #ff0;border-radius:12px;padding:24px 32px;text-align:center;max-width:360px;">
+      <div id="swap-dialog-text" style="color:#fff;font-size:18px;margin-bottom:16px;"></div>
+      <div style="display:flex;gap:12px;justify-content:center;">
+        <button id="btn-swap-yes" style="padding:10px 24px;background:rgba(0,255,0,0.2);color:#0f0;border:2px solid #0f0;border-radius:6px;cursor:pointer;font-size:16px;font-family:system-ui,sans-serif;">Yes, swap</button>
+        <button id="btn-swap-no" style="padding:10px 24px;background:rgba(255,0,0,0.2);color:#f44;border:2px solid #f44;border-radius:6px;cursor:pointer;font-size:16px;font-family:system-ui,sans-serif;">No thanks</button>
+      </div>
+    </div>
   </div>
 
   <div id="role-select" style="display:none;">

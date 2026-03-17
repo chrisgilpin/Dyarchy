@@ -265,20 +265,53 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
     }
 
+    case 'swap_request': {
+      // Teammate is asking to swap roles
+      const dialog = document.getElementById('swap-dialog')!;
+      const text = document.getElementById('swap-dialog-text')!;
+      text.textContent = `${msg.fromPlayer} wants to swap roles: they are ${msg.fromRole.toUpperCase()}, you are ${msg.toRole.toUpperCase()}. Accept?`;
+      dialog.style.display = 'flex';
+      break;
+    }
+
+    case 'swap_result': {
+      document.getElementById('swap-dialog')!.style.display = 'none';
+      if (msg.accepted && msg.newRole) {
+        // Switch to the new role
+        setRole(msg.newRole);
+      } else if (!msg.accepted) {
+        // Show rejection briefly
+        lobbyStatus.textContent = 'Swap request was declined';
+        setTimeout(() => { lobbyStatus.textContent = ''; }, 3000);
+      }
+      break;
+    }
+
     case 'error':
       lobbyStatus.textContent = msg.message;
+      setTimeout(() => { lobbyStatus.textContent = ''; }, 4000);
       break;
   }
 }
 
 function handleRoomState(msg: RoomStateMsg): void {
   lobbyCode.textContent = `Room: ${msg.roomCode}`;
-  lobbyPlayers.innerHTML = msg.players.map(p => {
-    const team = p.team ? `Team ${p.team}` : 'No team';
-    const role = p.role ?? 'No role';
-    const ready = p.ready ? ' [Ready]' : '';
-    return `<div>${p.name} — ${team} / ${role}${ready}</div>`;
-  }).join('');
+
+  // Update lobby slot grid with player names
+  document.querySelectorAll('.lobby-slot').forEach(btn => {
+    const slotTeam = parseInt(btn.getAttribute('data-team')!);
+    const slotRole = btn.getAttribute('data-role');
+    const playerInSlot = msg.players.find(p => p.team === slotTeam && p.role === slotRole);
+    const nameEl = btn.querySelector('.slot-player') as HTMLDivElement;
+
+    if (playerInSlot) {
+      nameEl.textContent = playerInSlot.name + (playerInSlot.ready ? ' [Ready]' : '');
+      (btn as HTMLElement).style.borderColor = slotTeam === 1 ? '#4488dd' : '#dd4444';
+    } else {
+      nameEl.textContent = '— open —';
+      (btn as HTMLElement).style.borderColor = '#334';
+    }
+  });
 }
 
 // ===================== Menu Buttons =====================
@@ -290,12 +323,15 @@ document.getElementById('btn-join')!.addEventListener('click', () => {
   joinGame(code);
 });
 
-document.getElementById('btn-role-fps')!.addEventListener('click', () => {
-  connection?.send({ type: 'select_role', team: 1, role: 'fps' });
+// Lobby slot selection — click a team/role slot to join it
+document.querySelectorAll('.lobby-slot').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const team = parseInt(btn.getAttribute('data-team')!) as 1 | 2;
+    const role = btn.getAttribute('data-role') as 'fps' | 'rts';
+    connection?.send({ type: 'select_role', team, role });
+  });
 });
-document.getElementById('btn-role-rts')!.addEventListener('click', () => {
-  connection?.send({ type: 'select_role', team: 1, role: 'rts' });
-});
+
 document.getElementById('btn-ready')!.addEventListener('click', () => {
   connection?.send({ type: 'ready' });
   lobbyStatus.textContent = 'Ready! Waiting for others...';
@@ -307,7 +343,14 @@ document.getElementById('btn-rts')!.addEventListener('click', () => setRole('rts
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Tab' && activeRole !== null && !rtsController?.gameOver) {
     e.preventDefault();
-    setRole(activeRole === 'fps' ? 'rts' : 'fps');
+    if (isOnline) {
+      // Online: request swap with teammate
+      connection?.send({ type: 'request_swap' });
+      lobbyStatus.textContent = 'Swap request sent to teammate...';
+    } else {
+      // Offline: instant switch
+      setRole(activeRole === 'fps' ? 'rts' : 'fps');
+    }
   }
   if (e.code === 'KeyM') {
     const sm = SoundManager.instance();
@@ -315,6 +358,16 @@ document.addEventListener('keydown', (e) => {
     const btn = document.getElementById('btn-mute');
     if (btn) btn.textContent = sm.muted ? 'Sound: OFF [M]' : 'Sound: ON [M]';
   }
+});
+
+// Swap dialog buttons
+document.getElementById('btn-swap-yes')!.addEventListener('click', () => {
+  connection?.send({ type: 'respond_swap', accepted: true });
+  document.getElementById('swap-dialog')!.style.display = 'none';
+});
+document.getElementById('btn-swap-no')!.addEventListener('click', () => {
+  connection?.send({ type: 'respond_swap', accepted: false });
+  document.getElementById('swap-dialog')!.style.display = 'none';
 });
 
 // Mute button

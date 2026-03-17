@@ -18,6 +18,15 @@ export interface ReadyMsg {
   type: 'ready';
 }
 
+export interface RequestSwapMsg {
+  type: 'request_swap';
+}
+
+export interface RespondSwapMsg {
+  type: 'respond_swap';
+  accepted: boolean;
+}
+
 export interface FPSInputMsg {
   type: 'fps_input';
   seq: number;
@@ -65,6 +74,8 @@ export type ClientMessage =
   | JoinRoomMsg
   | SelectRoleMsg
   | ReadyMsg
+  | RequestSwapMsg
+  | RespondSwapMsg
   | FPSInputMsg
   | FPSShootMsg
   | FPSHitMsg
@@ -153,6 +164,19 @@ export interface ChatMsg {
   text: string;
 }
 
+export interface SwapRequestMsg {
+  type: 'swap_request';
+  fromPlayer: string;
+  fromRole: Role;
+  toRole: Role;
+}
+
+export interface SwapResultMsg {
+  type: 'swap_result';
+  accepted: boolean;
+  newRole?: Role;
+}
+
 export interface ErrorMsg {
   type: 'error';
   message: string;
@@ -167,5 +191,7 @@ export type ServerMessage =
   | GameOverMsg
   | PlayerDiedMsg
   | PlayerRespawnedMsg
+  | SwapRequestMsg
+  | SwapResultMsg
   | ChatMsg
   | ErrorMsg;
