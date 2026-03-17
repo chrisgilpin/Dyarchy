@@ -1,0 +1,22 @@
+{
+  "name": "dyarchy",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev -w @dyarchy/server\" \"npm run dev -w @dyarchy/client\"",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "npm run build -w @dyarchy/client",
+    "build:server": "mkdir -p packages/server/public && cp -r packages/client/dist/* packages/server/public/",
+    "start": "node --import tsx packages/server/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

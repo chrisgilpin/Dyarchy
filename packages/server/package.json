@@ -1,0 +1,13 @@
+{
+  "name": "@dyarchy/server",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@dyarchy/shared": "*",
+    "ws": "^8.19.0",
+    "uuid": "^13.0.0"
+  }
+}

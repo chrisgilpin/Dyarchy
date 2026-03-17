@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+packages/server/public/
