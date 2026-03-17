@@ -2,7 +2,7 @@ FROM node:20-slim AS build
 
 WORKDIR /app
 
-# Copy package files
+# Copy all package files
 COPY package.json package-lock.json* ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/client/package.json packages/client/
@@ -22,17 +22,12 @@ FROM node:20-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-COPY packages/shared/package.json packages/shared/
-COPY packages/server/package.json packages/server/
-
-# Install production + dev deps (need tsx for runtime)
-RUN npm install --workspaces
-
-# Copy source and built static files
-COPY packages/shared packages/shared
-COPY packages/server packages/server
-COPY --from=build /app/packages/server/public packages/server/public
+# Copy everything from build stage (includes node_modules with tsx)
+COPY --from=build /app/package.json /app/package-lock.json* ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/shared ./packages/shared
+COPY --from=build /app/packages/server ./packages/server
+COPY --from=build /app/tsconfig.base.json ./
 
 EXPOSE 8080
 ENV PORT=8080
