@@ -1,4 +1,4 @@
-export type BuildingChoice = 'barracks' | 'armory' | 'tower';
+export type BuildingChoice = 'farm' | 'barracks' | 'armory' | 'tower' | 'turret' | 'sniper_nest' | 'garage' | 'main_base';
 
 export interface BuildPanelCallbacks {
   onSelect: (building: BuildingChoice) => void;
@@ -6,15 +6,25 @@ export interface BuildPanelCallbacks {
 }
 
 export const BUILDING_COSTS: Record<BuildingChoice, number> = {
-  barracks: 25,
+  farm: 24,
+  barracks: 150,
   armory: 300,
-  tower: 150,
+  tower: 500,
+  turret: 200,
+  sniper_nest: 250,
+  garage: 300,
+  main_base: 1000,
 };
 
-const BUILDING_INFO: Record<BuildingChoice, { label: string; cost: number; key: string }> = {
-  barracks: { label: 'Barracks', cost: 25, key: '1' },
-  armory: { label: 'Armory', cost: 300, key: '2' },
-  tower: { label: 'Tower', cost: 150, key: '3' },
+const BUILDING_INFO: Record<BuildingChoice, { label: string; cost: number; key: string; requiresUpgrade?: boolean }> = {
+  farm: { label: 'Farm', cost: 24, key: '1' },
+  barracks: { label: 'Barracks', cost: 150, key: '2' },
+  armory: { label: 'Armory', cost: 300, key: '3' },
+  tower: { label: 'Tower', cost: 500, key: '4' },
+  turret: { label: 'Turret', cost: 200, key: '5', requiresUpgrade: true },
+  sniper_nest: { label: 'Sniper Nest', cost: 250, key: '6' },
+  garage: { label: 'Garage', cost: 300, key: '7', requiresUpgrade: true },
+  main_base: { label: 'HQ', cost: 1000, key: '8' },
 };
 
 export class BuildPanel {
@@ -22,6 +32,7 @@ export class BuildPanel {
   private callbacks: BuildPanelCallbacks | null = null;
   private activeBuilding: BuildingChoice | null = null;
   private crystals = 0;
+  baseUpgraded = false;
 
   constructor() {
     this.el = document.createElement('div');
@@ -106,6 +117,8 @@ export class BuildPanel {
 
   private selectBuilding(type: BuildingChoice): void {
     if (this.crystals < BUILDING_COSTS[type]) return;
+    const info = BUILDING_INFO[type];
+    if (info.requiresUpgrade && !this.baseUpgraded) return;
 
     if (this.activeBuilding === type) {
       this.activeBuilding = null;
@@ -122,6 +135,9 @@ export class BuildPanel {
       case 'Digit1': this.selectBuilding('barracks'); break;
       case 'Digit2': this.selectBuilding('armory'); break;
       case 'Digit3': this.selectBuilding('tower'); break;
+      case 'Digit4': if (this.baseUpgraded) this.selectBuilding('turret'); break;
+      case 'Digit5': if (this.baseUpgraded) this.selectBuilding('garage'); break;
+      case 'Digit8': this.selectBuilding('main_base'); break;
       case 'Escape':
         if (this.activeBuilding) {
           this.activeBuilding = null;
@@ -135,8 +151,20 @@ export class BuildPanel {
   private updateButtonStyles(): void {
     for (const btn of this.el.querySelectorAll('button') as NodeListOf<HTMLButtonElement>) {
       const type = btn.dataset.building as BuildingChoice;
+      const info = BUILDING_INFO[type];
       const canAfford = this.crystals >= BUILDING_COSTS[type];
       const isActive = this.activeBuilding === type;
+
+      // Show turret as locked if base not upgraded
+      if (info.requiresUpgrade && !this.baseUpgraded) {
+        btn.style.opacity = '0.3';
+        btn.style.cursor = 'not-allowed';
+        btn.style.borderColor = '#333';
+        btn.title = 'Requires Base Upgrade';
+        btn.classList.add('disabled');
+        continue;
+      }
+      btn.style.display = '';
 
       btn.style.borderColor = isActive ? '#0f0' : '#555';
       btn.style.opacity = canAfford ? '1' : '0.4';

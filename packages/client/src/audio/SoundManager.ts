@@ -7,6 +7,8 @@ export class SoundManager {
   private _volume = 0.5;
   private noiseBuffer: AudioBuffer | null = null;
   private lastTowerFireTime = 0;
+  private hornBuffers: AudioBuffer[] = [];
+  private hornCooldown = 0;
 
   // Listener position (updated each frame from the active camera)
   private listenerPos = { x: 0, y: 0, z: 0 };
@@ -111,7 +113,7 @@ export class SoundManager {
   }
 
   /** Grunt attack — dull thud */
-  gruntAttack(worldX?: number, worldZ?: number): void {
+  workerAttack(worldX?: number, worldZ?: number): void {
     const sv = this.spatialVolume(worldX, worldZ);
     if (sv <= 0) return;
     this.resume();
@@ -158,7 +160,7 @@ export class SoundManager {
 
   // ===================== Unit Events =====================
 
-  gruntSpawned(worldX?: number, worldZ?: number): void {
+  workerSpawned(worldX?: number, worldZ?: number): void {
     const sv = this.spatialVolume(worldX, worldZ);
     if (sv <= 0) return;
     this.resume();
@@ -292,5 +294,46 @@ export class SoundManager {
     source.start(t);
     source.stop(t + duration + 0.01);
     source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
+  }
+
+  // ===================== Horn (audio file samples) =====================
+
+  /** Load horn MP3 samples from URLs. Call once at startup. */
+  async loadHornSamples(urls: string[]): Promise<void> {
+    const ctx = this.audioCtx;
+    const buffers = await Promise.all(
+      urls.map(async (url) => {
+        const resp = await fetch(url);
+        const arrayBuf = await resp.arrayBuffer();
+        return ctx.decodeAudioData(arrayBuf);
+      }),
+    );
+    this.hornBuffers = buffers;
+  }
+
+  /** Play a random horn sample. Returns true if played, false if on cooldown or no samples. */
+  playHorn(worldX?: number, worldZ?: number): boolean {
+    if (this.hornBuffers.length === 0) return false;
+    if (this.hornCooldown > 0) return false;
+    this.resume();
+    const sv = this.spatialVolume(worldX, worldZ);
+    if (sv <= 0) return false;
+
+    const buf = this.hornBuffers[Math.floor(Math.random() * this.hornBuffers.length)];
+    const source = this.audioCtx.createBufferSource();
+    source.buffer = buf;
+    const gain = this.audioCtx.createGain();
+    gain.gain.value = 0.7 * sv;
+    source.connect(gain);
+    gain.connect(this.masterGain);
+    source.start();
+    source.onended = () => { source.disconnect(); gain.disconnect(); };
+    this.hornCooldown = 0.8; // seconds between honks
+    return true;
+  }
+
+  /** Call each frame to tick down horn cooldown. */
+  tickHornCooldown(dt: number): void {
+    if (this.hornCooldown > 0) this.hornCooldown -= dt;
   }
 }

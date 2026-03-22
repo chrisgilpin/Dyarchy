@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { RTSCamera } from './RTSCamera.js';
 import { SoundManager } from '../audio/SoundManager.js';
+import { getTerrainHeight as defaultTerrainHeight } from '../renderer/Terrain.js';
 
 export interface Selectable {
   id: string;
@@ -22,10 +23,18 @@ const RING_SIZES: Record<string, { inner: number; outer: number }> = {
   barracks: { inner: 4, outer: 4.3 },
   armory: { inner: 4, outer: 4.3 },
   player_tower: { inner: 3.5, outer: 3.8 },
+  turret: { inner: 2, outer: 2.3 },
   resource_node: { inner: 2, outer: 2.3 },
-  grunt: { inner: 1.2, outer: 1.5 },
+  worker: { inner: 1.2, outer: 1.5 },
   fighter: { inner: 1, outer: 1.3 },
   fps_player: { inner: 1.2, outer: 1.5 },
+  foot_soldier: { inner: 1.1, outer: 1.4 },
+  archer: { inner: 1.1, outer: 1.4 },
+  sniper_nest: { inner: 2, outer: 2.3 },
+  farm: { inner: 3, outer: 3.3 },
+  garage: { inner: 5, outer: 5.3 },
+  jeep: { inner: 2.5, outer: 2.8 },
+  helicopter: { inner: 3.0, outer: 3.3 },
 };
 
 const DEFAULT_RING = { inner: 2, outer: 2.3 };
@@ -41,8 +50,14 @@ export class Selection {
   /** When true, clicks don't change selection (used during building placement) */
   suppressClicks = false;
 
+  /** Filter function — return false to make an entity unselectable */
+  selectFilter: ((s: Selectable) => boolean) | null = null;
+
+  private shiftHeld = false;
   private isDragging = false;
   private dragStart = { x: 0, y: 0 };
+  private lastClickTime = 0;
+  private lastClickPos = { x: 0, y: 0 };
   private readonly dragBox: HTMLDivElement;
 
   private readonly highlights = new Map<string, THREE.Mesh>();
@@ -51,9 +66,12 @@ export class Selection {
   private actionMarker: THREE.Mesh | null = null;
   private actionMarkerTimer = 0;
 
-  constructor(rtsCamera: RTSCamera, scene: THREE.Scene) {
+  private terrainHeight: (x: number, z: number) => number;
+
+  constructor(rtsCamera: RTSCamera, scene: THREE.Scene, terrainHeight?: (x: number, z: number) => number) {
     this.rtsCamera = rtsCamera;
     this.scene = scene;
+    this.terrainHeight = terrainHeight ?? defaultTerrainHeight;
 
     this.dragBox = document.createElement('div');
     this.dragBox.style.cssText =
@@ -99,7 +117,7 @@ export class Selection {
     for (const [id, ring] of this.highlights) {
       const s = this.selectables.find(s => s.id === id);
       if (s) {
-        ring.position.set(s.mesh.position.x, 0.15, s.mesh.position.z);
+        ring.position.set(s.mesh.position.x, this.terrainHeight(s.mesh.position.x, s.mesh.position.z) + 0.15, s.mesh.position.z);
       }
     }
 
@@ -124,12 +142,16 @@ export class Selection {
   };
 
   /** Show a visual marker for an action: move (green), attack (red), harvest (blue) */
-  showActionMarker(position: THREE.Vector3, action: 'move' | 'attack' | 'harvest'): void {
+  showActionMarker(position: THREE.Vector3, action: 'move' | 'attack' | 'harvest', targetEntityType?: string): void {
     SoundManager.instance().unitCommand();
     this.removeActionMarker();
 
     const color = Selection.ACTION_COLORS[action];
-    const geo = new THREE.RingGeometry(1, 1.3, 32);
+    // Scale ring to be larger than the target entity
+    const targetSize = targetEntityType ? (RING_SIZES[targetEntityType] || DEFAULT_RING) : DEFAULT_RING;
+    const inner = Math.max(1, targetSize.outer + 0.3);
+    const outer = inner + 0.3;
+    const geo = new THREE.RingGeometry(inner, outer, 32);
     const mat = new THREE.MeshBasicMaterial({
       color,
       side: THREE.DoubleSide,
@@ -138,7 +160,7 @@ export class Selection {
     });
     this.actionMarker = new THREE.Mesh(geo, mat);
     this.actionMarker.rotation.x = -Math.PI / 2;
-    this.actionMarker.position.set(position.x, 0.15, position.z);
+    this.actionMarker.position.set(position.x, this.terrainHeight(position.x, position.z) + 0.15, position.z);
     this.scene.add(this.actionMarker);
     this.actionMarkerTimer = 1.5;
   }
@@ -200,12 +222,19 @@ export class Selection {
 
     const isClick = dx < 5 && dy < 5;
 
+    this.shiftHeld = e.shiftKey;
     if (!e.shiftKey) {
       this.clearSelection();
     }
 
     if (isClick) {
-      this.clickSelect(e.clientX, e.clientY);
+      const now = performance.now();
+      const dblClickDx = Math.abs(e.clientX - this.lastClickPos.x);
+      const dblClickDy = Math.abs(e.clientY - this.lastClickPos.y);
+      const isDoubleClick = (now - this.lastClickTime < 400) && dblClickDx < 10 && dblClickDy < 10;
+      this.lastClickTime = now;
+      this.lastClickPos = { x: e.clientX, y: e.clientY };
+      this.clickSelect(e.clientX, e.clientY, isDoubleClick);
     } else {
       this.boxSelect(
         Math.min(e.clientX, this.dragStart.x),
@@ -219,17 +248,23 @@ export class Selection {
     this.dragBox.style.display = 'none';
   };
 
-  private clickSelect(screenX: number, screenY: number): void {
-    const worldPos = this.rtsCamera.screenToWorld(screenX, screenY);
-    if (!worldPos) return;
+  private clickSelect(screenX: number, screenY: number, doubleClick = false): void {
+    // Project each selectable to screen space and pick the closest to the click.
+    // This correctly handles units at any terrain height.
+    const camera = this.rtsCamera.camera;
+    const MAX_SCREEN_DIST = 40; // pixels
 
     let closest: Selectable | null = null;
-    let closestDist = 5;
+    let closestDist = MAX_SCREEN_DIST;
 
     for (const s of this.selectables) {
-      const dx = s.mesh.position.x - worldPos.x;
-      const dz = s.mesh.position.z - worldPos.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (this.selectFilter && !this.selectFilter(s)) continue;
+      const projected = s.mesh.position.clone().project(camera);
+      const sx = (projected.x + 1) / 2 * window.innerWidth;
+      const sy = (-projected.y + 1) / 2 * window.innerHeight;
+      const dx = sx - screenX;
+      const dy = sy - screenY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < closestDist) {
         closestDist = dist;
         closest = s;
@@ -238,6 +273,21 @@ export class Selection {
 
     if (closest) {
       this.addToSelection(closest.id);
+
+      // Double-click: also select all same-type units within 30 units
+      if (doubleClick) {
+        const SAME_TYPE_RADIUS = 30;
+        for (const s of this.selectables) {
+          if (s.id === closest.id) continue;
+          if (this.selectFilter && !this.selectFilter(s)) continue;
+          if (s.entityType !== closest.entityType || s.teamId !== closest.teamId) continue;
+          const sdx = s.mesh.position.x - closest.mesh.position.x;
+          const sdz = s.mesh.position.z - closest.mesh.position.z;
+          if (Math.sqrt(sdx * sdx + sdz * sdz) < SAME_TYPE_RADIUS) {
+            this.addToSelection(s.id);
+          }
+        }
+      }
     }
   }
 
@@ -247,6 +297,7 @@ export class Selection {
     const camera = this.rtsCamera.camera;
 
     for (const s of this.selectables) {
+      if (this.selectFilter && !this.selectFilter(s)) continue;
       const projected = s.mesh.position.clone().project(camera);
       const screenX = (projected.x + 1) / 2 * window.innerWidth;
       const screenY = (-projected.y + 1) / 2 * window.innerHeight;
@@ -270,7 +321,7 @@ export class Selection {
     if (hadSelection) this.onChange?.();
   }
 
-  private updateHighlights(): void {
+  updateHighlights(): void {
     // Remove stale highlights
     for (const [id, ring] of this.highlights) {
       if (!this.selected.has(id)) {
@@ -290,10 +341,11 @@ export class Selection {
       const size = RING_SIZES[s.entityType] || DEFAULT_RING;
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(size.inner, size.outer, 32),
-        new THREE.MeshBasicMaterial({ color: 0x00ff00, side: THREE.DoubleSide }),
+        new THREE.MeshBasicMaterial({ color: 0x00ff00, side: THREE.DoubleSide, depthTest: false, depthWrite: false }),
       );
+      ring.renderOrder = 999;
       ring.rotation.x = -Math.PI / 2;
-      ring.position.set(s.mesh.position.x, 0.15, s.mesh.position.z);
+      ring.position.set(s.mesh.position.x, this.terrainHeight(s.mesh.position.x, s.mesh.position.z) + 0.15, s.mesh.position.z);
       this.scene.add(ring);
       this.highlights.set(id, ring);
     }

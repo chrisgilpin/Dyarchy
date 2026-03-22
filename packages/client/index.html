@@ -2,11 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Dyarchy</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { overflow: hidden; background: #000; }
+    body { overflow: hidden; background: #000; -webkit-user-select: none; user-select: none; }
     #game { display: block; width: 100vw; height: 100vh; }
 
     /* Crosshair */
@@ -140,23 +140,78 @@
   <div id="overlay"><span>Click to play</span></div>
   <button id="btn-mute" style="position:fixed;top:12px;left:12px;z-index:50;background:rgba(0,0,0,0.6);color:#fff;border:1px solid #555;border-radius:6px;padding:6px 12px;cursor:pointer;font-family:system-ui,sans-serif;font-size:13px;">Sound: ON [M]</button>
 
-  <div id="main-menu" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);z-index:35;gap:16px;font-family:system-ui,sans-serif;">
-    <h1 style="color:#fff;font-size:56px;margin-bottom:4px;">DYARCHY</h1>
-    <p style="color:#888;font-size:14px;margin-bottom:20px;">FPS + RTS 2v2</p>
-    <button id="btn-offline" class="role-btn">Play Offline<small>Single-player testing</small></button>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:8px;">
-      <input id="room-code" type="text" placeholder="Room code" maxlength="6"
-        style="padding:10px 16px;font-size:16px;border:2px solid #555;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;width:160px;text-align:center;text-transform:uppercase;font-family:system-ui,sans-serif;" />
-      <button id="btn-join" class="role-btn" style="min-width:120px;">Join<small>Online game</small></button>
+  <div id="main-menu" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:transparent;z-index:35;gap:0;font-family:system-ui,sans-serif;">
+    <div style="background:rgba(10,10,20,0.88);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:32px 40px;backdrop-filter:blur(8px);text-align:center;">
+      <h1 style="color:#fff;font-size:56px;margin:0 0 4px;">DYARCHY</h1>
+      <p style="color:#999;font-size:14px;margin:0 0 24px;font-style:italic;">a goodhouse games production</p>
+
+      <!-- Player Name -->
+      <div style="margin-bottom:20px;text-align:center;">
+        <label style="color:#aaa;font-size:12px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:6px;">Player Name</label>
+        <input id="player-name" type="text" maxlength="16"
+          style="padding:10px 16px;font-size:16px;border:2px solid #555;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;width:200px;text-align:center;font-family:system-ui,sans-serif;"
+          placeholder="Enter your name" />
+      </div>
+
+
+
+      <!-- Multiplayer -->
+      <div style="border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:16px 24px;text-align:center;min-width:320px;">
+        <div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Multiplayer</div>
+
+        <!-- Host options -->
+        <div style="margin-bottom:8px;">
+          <input id="room-name" type="text" maxlength="30" placeholder="Room name"
+            style="padding:8px 12px;font-size:14px;border:2px solid #555;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;width:100%;box-sizing:border-box;font-family:system-ui,sans-serif;margin-bottom:6px;" />
+          <div style="display:flex;gap:8px;justify-content:center;margin-bottom:6px;">
+            <button id="vis-public" style="padding:6px 16px;border:2px solid #4a8;border-radius:6px;background:rgba(60,140,80,0.3);color:#4a8;cursor:pointer;font-size:13px;font-family:system-ui,sans-serif;">Public</button>
+            <button id="vis-private" style="padding:6px 16px;border:2px solid #555;border-radius:6px;background:transparent;color:#888;cursor:pointer;font-size:13px;font-family:system-ui,sans-serif;">Private</button>
+          </div>
+        </div>
+        <button id="btn-host" class="role-btn" style="width:100%;margin-bottom:10px;">Host Game<small>Create a new room</small></button>
+
+        <!-- Browse -->
+        <button id="btn-browse" class="role-btn" style="width:100%;margin-bottom:10px;background:rgba(80,100,140,0.2);border-color:#68a;">Browse Games<small>Find a public match</small></button>
+
+        <!-- Join by code -->
+        <div style="display:flex;gap:10px;align-items:center;">
+          <input id="room-code" type="text" placeholder="Room code" maxlength="8"
+            style="padding:10px 16px;font-size:16px;border:2px solid #555;border-radius:8px;background:rgba(255,255,255,0.1);color:#fff;width:160px;text-align:center;text-transform:uppercase;font-family:system-ui,sans-serif;flex:1;" />
+          <button id="btn-join" class="role-btn" style="min-width:100px;">Join<small>Enter code</small></button>
+        </div>
+      </div>
+
+      <div id="connection-status" style="color:#666;font-size:13px;margin-top:12px;"></div>
     </div>
-    <button id="btn-host" class="role-btn" style="min-width:200px;">Host Game<small>Create a new room</small></button>
-    <div id="connection-status" style="color:#666;font-size:13px;margin-top:8px;"></div>
   </div>
 
-  <div id="lobby" style="position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);z-index:34;gap:16px;font-family:system-ui,sans-serif;">
+  <div id="lobby" style="position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:transparent;z-index:34;font-family:system-ui,sans-serif;">
+  <div style="background:rgba(10,10,20,0.88);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px 36px;backdrop-filter:blur(8px);text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;">
     <h2 style="color:#fff;font-size:32px;">Lobby</h2>
     <div id="lobby-code" style="color:#0f0;font-size:24px;font-weight:bold;"></div>
     <p style="color:#888;font-size:13px;">Share this code with friends to join</p>
+
+    <!-- Editable name in lobby -->
+    <div style="margin:4px 0 8px;text-align:center;">
+      <label style="color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Your Name</label>
+      <input id="lobby-name" type="text" maxlength="16"
+        style="display:block;margin:4px auto 0;padding:6px 12px;font-size:14px;border:1px solid #555;border-radius:6px;background:rgba(255,255,255,0.1);color:#fff;width:160px;text-align:center;font-family:system-ui,sans-serif;" />
+    </div>
+
+    <!-- Map selection -->
+    <div style="margin:4px 0;">
+      <label style="color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:1px;">Map</label>
+      <div style="display:flex;gap:12px;margin-top:6px;">
+        <button class="map-card" data-map="meadow" style="flex:1;padding:10px 14px;background:rgba(60,120,60,0.2);color:#fff;border:2px solid #4a8;border-radius:8px;cursor:pointer;text-align:center;font-family:system-ui,sans-serif;">
+          <div style="font-size:15px;font-weight:bold;">Meadow</div>
+          <div style="font-size:11px;color:#888;margin-top:2px;">240x150 — Rolling green hills</div>
+        </button>
+        <button class="map-card" data-map="frostpeak" style="flex:1;padding:10px 14px;background:rgba(80,100,140,0.2);color:#fff;border:2px solid #334;border-radius:8px;cursor:pointer;text-align:center;font-family:system-ui,sans-serif;">
+          <div style="font-size:15px;font-weight:bold;">Frostpeak</div>
+          <div style="font-size:11px;color:#888;margin-top:2px;">360x225 — Snowy mountain peaks</div>
+        </button>
+      </div>
+    </div>
 
     <!-- Team/Role selection grid -->
     <div style="display:flex;gap:24px;margin:12px 0;">
@@ -188,6 +243,20 @@
 
     <button id="btn-ready" class="role-btn" style="min-width:200px;border-color:#0f0;">Ready</button>
     <div id="lobby-status" style="color:#888;font-size:13px;"></div>
+  </div>
+  </div>
+
+  <!-- Browse Lobby Screen -->
+  <div id="browse-lobby" style="position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;background:transparent;z-index:35;gap:16px;font-family:system-ui,sans-serif;">
+    <div style="background:rgba(10,10,20,0.92);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:24px 32px;backdrop-filter:blur(8px);width:480px;max-height:80vh;display:flex;flex-direction:column;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="color:#fff;font-size:24px;margin:0;">Public Games</h2>
+        <button id="btn-browse-back" style="padding:6px 14px;background:rgba(255,255,255,0.1);color:#aaa;border:1px solid #555;border-radius:6px;cursor:pointer;font-size:13px;font-family:system-ui,sans-serif;">Back</button>
+      </div>
+      <div id="lobby-room-list" style="flex:1;overflow-y:auto;min-height:200px;max-height:400px;">
+        <div id="lobby-empty" style="color:#666;font-size:14px;text-align:center;padding:40px 0;">No public games available</div>
+      </div>
+    </div>
   </div>
 
   <!-- Swap request dialog (shown during game) -->

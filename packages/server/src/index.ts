@@ -29,19 +29,55 @@ const MIME_TYPES: Record<string, string> = {
 
 const rooms = new Map<string, GameRoom>();
 const playerRooms = new Map<string, string>();
+const lobbySubscribers = new Set<WebSocket>();
 
 function generateRoomCode(): string {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+  let code: string;
+  do {
+    code = Math.random().toString(36).substring(2, 8).toUpperCase();
+  } while (rooms.has(code));
+  return code;
 }
 
-function getOrCreateRoom(code: string): GameRoom {
-  let room = rooms.get(code);
-  if (!room) {
-    room = new GameRoom(code);
-    rooms.set(code, room);
-    console.log(`Room ${code} created`);
-  }
+function createRoom(code: string, roomName?: string, visibility?: 'public' | 'private'): GameRoom {
+  const room = new GameRoom(code, roomName, visibility);
+  room.onStatusChange = () => scheduleLobbyBroadcast();
+  rooms.set(code, room);
+  console.log(`Room ${code} created (${visibility ?? 'public'}, "${roomName ?? code}")`);
   return room;
+}
+
+// ===================== Lobby Broadcasting =====================
+
+let lobbyBroadcastScheduled = false;
+
+function scheduleLobbyBroadcast(): void {
+  if (lobbyBroadcastScheduled) return;
+  lobbyBroadcastScheduled = true;
+  queueMicrotask(() => {
+    lobbyBroadcastScheduled = false;
+    broadcastLobbyList();
+  });
+}
+
+function broadcastLobbyList(): void {
+  if (lobbySubscribers.size === 0) return;
+  const lobbyRooms = [...rooms.values()]
+    .filter(r => r.visibility === 'public' && r.playerCount > 0)
+    .map(r => r.toLobbyInfo());
+  const msg = JSON.stringify({ type: 'lobby_list', rooms: lobbyRooms });
+  for (const ws of lobbySubscribers) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+function sendLobbyListTo(ws: WebSocket): void {
+  const lobbyRooms = [...rooms.values()]
+    .filter(r => r.visibility === 'public' && r.playerCount > 0)
+    .map(r => r.toLobbyInfo());
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'lobby_list', rooms: lobbyRooms }));
+  }
 }
 
 // HTTP server — serves static files + health check
@@ -98,18 +134,88 @@ wss.on('connection', (ws: WebSocket) => {
       return;
     }
 
-    if (msg.type === 'join_room') {
+    // Lobby browsing (no room required)
+    if (msg.type === 'subscribe_lobby') {
+      lobbySubscribers.add(ws);
+      sendLobbyListTo(ws);
+      return;
+    }
+    if (msg.type === 'unsubscribe_lobby') {
+      lobbySubscribers.delete(ws);
+      return;
+    }
+
+    // Create a new room with options
+    if (msg.type === 'create_room') {
       if (playerRoom) {
         playerRoom.removePlayer(playerId);
+        if (playerRoom.isEmpty) { rooms.delete(playerRoom.code); }
         playerRooms.delete(playerId);
       }
 
-      const code = msg.roomCode || generateRoomCode();
-      const room = getOrCreateRoom(code);
+      // Validate custom code if provided
+      let code: string;
+      if (msg.customCode) {
+        const cleaned = msg.customCode.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        if (cleaned.length < 4 || cleaned.length > 8) {
+          ws.send(JSON.stringify({ type: 'join_error', reason: 'Room code must be 4-8 alphanumeric characters' }));
+          return;
+        }
+        if (rooms.has(cleaned)) {
+          ws.send(JSON.stringify({ type: 'join_error', reason: 'Room code already in use' }));
+          return;
+        }
+        code = cleaned;
+      } else {
+        code = generateRoomCode();
+      }
+
+      const room = createRoom(code, msg.roomName || undefined, msg.visibility);
+      lobbySubscribers.delete(ws);
       room.addPlayer(playerId, msg.playerName || 'Player', ws);
       playerRoom = room;
       playerRooms.set(playerId, code);
-      console.log(`Player ${playerId} joined room ${code} (${room.playerCount} players)`);
+      console.log(`Player ${playerId} created room ${code} (${room.playerCount} players)`);
+      scheduleLobbyBroadcast();
+      return;
+    }
+
+    // Join existing room by code
+    if (msg.type === 'join_room') {
+      if (playerRoom) {
+        playerRoom.removePlayer(playerId);
+        if (playerRoom.isEmpty) { rooms.delete(playerRoom.code); }
+        playerRooms.delete(playerId);
+      }
+
+      // Empty code = legacy host flow (create public room with default name)
+      if (!msg.roomCode) {
+        const code = generateRoomCode();
+        const room = createRoom(code);
+        lobbySubscribers.delete(ws);
+        room.addPlayer(playerId, msg.playerName || 'Player', ws);
+        playerRoom = room;
+        playerRooms.set(playerId, code);
+        scheduleLobbyBroadcast();
+        return;
+      }
+
+      const room = rooms.get(msg.roomCode);
+      if (!room) {
+        ws.send(JSON.stringify({ type: 'join_error', reason: 'Room not found' }));
+        return;
+      }
+      if (room.isFull) {
+        ws.send(JSON.stringify({ type: 'join_error', reason: 'Room is full' }));
+        return;
+      }
+
+      lobbySubscribers.delete(ws);
+      room.addPlayer(playerId, msg.playerName || 'Player', ws);
+      playerRoom = room;
+      playerRooms.set(playerId, msg.roomCode);
+      console.log(`Player ${playerId} joined room ${msg.roomCode} (${room.playerCount} players)`);
+      scheduleLobbyBroadcast();
       return;
     }
 
@@ -120,6 +226,7 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('close', () => {
     console.log(`Player ${playerId} disconnected`);
+    lobbySubscribers.delete(ws);
     if (playerRoom) {
       playerRoom.removePlayer(playerId);
       if (playerRoom.isEmpty) {
@@ -127,6 +234,7 @@ wss.on('connection', (ws: WebSocket) => {
         console.log(`Room ${playerRoom.code} deleted (empty)`);
       }
       playerRooms.delete(playerId);
+      scheduleLobbyBroadcast();
     }
   });
 });

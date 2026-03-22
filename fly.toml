@@ -26,5 +26,5 @@ primary_region = 'iad'
     path = '/health'
 
 [[vm]]
-  size = 'shared-cpu-1x'
-  memory = '256mb'
+  size = 'shared-cpu-2x'
+  memory = '1024mb'

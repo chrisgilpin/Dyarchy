@@ -9,9 +9,12 @@ const VISION_RANGES: Record<string, number> = {
   player_tower: 16,
   barracks: 12,
   armory: 12,
-  grunt: 14,
+  worker: 14,
   fighter: 12,
   fps_player: 16,
+  foot_soldier: 14,
+  archer: 25,
+  farm: 10,
 };
 
 const DEFAULT_VISION = 10;
@@ -38,19 +41,30 @@ export class FogOfWar {
   // Current frame visibility
   private visibility: Uint8Array;
 
-  private teamId: 1 | 2;
+  // Map dimensions (configurable per-map)
+  private mapWidth: number;
+  private mapDepth: number;
+  private fogResX: number;
+  private fogResZ: number;
+
+  teamId: 1 | 2;
   enabled = true;
 
-  constructor(scene: THREE.Scene, teamId: 1 | 2 = 1) {
+  constructor(scene: THREE.Scene, teamId: 1 | 2 = 1, mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH, terrainHeightFn?: (x: number, z: number) => number) {
     this.scene = scene;
     this.teamId = teamId;
-    this.explored = new Uint8Array(FOG_RES_X * FOG_RES_Z);
-    this.visibility = new Uint8Array(FOG_RES_X * FOG_RES_Z);
+    this.mapWidth = mapWidth;
+    this.mapDepth = mapDepth;
+    // Scale fog resolution proportionally to map size
+    this.fogResX = Math.round(FOG_RES_X * (mapWidth / 240));
+    this.fogResZ = Math.round(FOG_RES_Z * (mapDepth / 150));
+    this.explored = new Uint8Array(this.fogResX * this.fogResZ);
+    this.visibility = new Uint8Array(this.fogResX * this.fogResZ);
 
     // Create offscreen canvas for fog texture
     this.canvas = document.createElement('canvas');
-    this.canvas.width = FOG_RES_X;
-    this.canvas.height = FOG_RES_Z;
+    this.canvas.width = this.fogResX;
+    this.canvas.height = this.fogResZ;
     this.ctx = this.canvas.getContext('2d')!;
 
     // Create texture and fog plane
@@ -65,11 +79,29 @@ export class FogOfWar {
       side: THREE.DoubleSide,
     });
 
-    const geo = new THREE.PlaneGeometry(MAP_WIDTH, MAP_DEPTH);
+    // Use enough segments so the fog plane can follow terrain contours
+    const segsX = 60;
+    const segsZ = Math.round(60 * (this.mapDepth / this.mapWidth));
+    const geo = new THREE.PlaneGeometry(this.mapWidth, this.mapDepth, segsX, segsZ);
+    geo.rotateX(-Math.PI / 2);
+
+    // Displace vertices to hug the terrain surface
+    if (terrainHeightFn) {
+      const posAttr = geo.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        const x = posAttr.getX(i);
+        const z = posAttr.getZ(i);
+        posAttr.setY(i, terrainHeightFn(x, z) + 1.5);
+      }
+      geo.computeVertexNormals();
+    }
+
     this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.set(0, 0.5, 0); // slightly above ground
-    this.mesh.renderOrder = 500; // render above terrain but below UI pips
+    if (!terrainHeightFn) {
+      // Flat fallback for meadow-style maps
+      this.mesh.position.set(0, 5, 0);
+    }
+    this.mesh.renderOrder = 500;
     scene.add(this.mesh);
   }
 
@@ -111,15 +143,15 @@ export class FogOfWar {
   /** Check if a world position is currently visible */
   isVisible(worldX: number, worldZ: number): boolean {
     const { gx, gz } = this.worldToGrid(worldX, worldZ);
-    if (gx < 0 || gx >= FOG_RES_X || gz < 0 || gz >= FOG_RES_Z) return false;
-    return this.visibility[gz * FOG_RES_X + gx] === VISIBLE;
+    if (gx < 0 || gx >= this.fogResX || gz < 0 || gz >= this.fogResZ) return false;
+    return this.visibility[gz * this.fogResX + gx] === VISIBLE;
   }
 
   /** Check if a world position has been explored */
   isExplored(worldX: number, worldZ: number): boolean {
     const { gx, gz } = this.worldToGrid(worldX, worldZ);
-    if (gx < 0 || gx >= FOG_RES_X || gz < 0 || gz >= FOG_RES_Z) return false;
-    return this.explored[gz * FOG_RES_X + gx] >= EXPLORED;
+    if (gx < 0 || gx >= this.fogResX || gz < 0 || gz >= this.fogResZ) return false;
+    return this.explored[gz * this.fogResX + gx] >= EXPLORED;
   }
 
   destroy(): void {
@@ -135,29 +167,26 @@ export class FogOfWar {
   // ===================== Internal =====================
 
   private worldToGrid(worldX: number, worldZ: number): { gx: number; gz: number } {
-    // Map world coords (-MAP_WIDTH/2..MAP_WIDTH/2, -MAP_DEPTH/2..MAP_DEPTH/2) to grid (0..RES)
-    const gx = Math.floor(((worldX + MAP_WIDTH / 2) / MAP_WIDTH) * FOG_RES_X);
-    const gz = Math.floor(((worldZ + MAP_DEPTH / 2) / MAP_DEPTH) * FOG_RES_Z);
+    const gx = Math.floor(((worldX + this.mapWidth / 2) / this.mapWidth) * this.fogResX);
+    const gz = Math.floor(((worldZ + this.mapDepth / 2) / this.mapDepth) * this.fogResZ);
     return { gx, gz };
   }
 
   private revealCircle(worldX: number, worldZ: number, range: number): void {
     const { gx: cx, gz: cz } = this.worldToGrid(worldX, worldZ);
-    // Convert range from world units to grid cells
-    const rx = Math.ceil((range / MAP_WIDTH) * FOG_RES_X);
-    const rz = Math.ceil((range / MAP_DEPTH) * FOG_RES_Z);
+    const rx = Math.ceil((range / this.mapWidth) * this.fogResX);
+    const rz = Math.ceil((range / this.mapDepth) * this.fogResZ);
 
     for (let dz = -rz; dz <= rz; dz++) {
       for (let dx = -rx; dx <= rx; dx++) {
         const gx = cx + dx;
         const gz = cz + dz;
-        if (gx < 0 || gx >= FOG_RES_X || gz < 0 || gz >= FOG_RES_Z) continue;
+        if (gx < 0 || gx >= this.fogResX || gz < 0 || gz >= this.fogResZ) continue;
 
-        // Ellipse check (map isn't square)
         const nx = dx / rx;
         const nz = dz / rz;
         if (nx * nx + nz * nz <= 1) {
-          this.visibility[gz * FOG_RES_X + gx] = VISIBLE;
+          this.visibility[gz * this.fogResX + gx] = VISIBLE;
         }
       }
     }
@@ -165,32 +194,29 @@ export class FogOfWar {
 
   private renderFogTexture(): void {
     const ctx = this.ctx;
-    const imgData = ctx.createImageData(FOG_RES_X, FOG_RES_Z);
+    const imgData = ctx.createImageData(this.fogResX, this.fogResZ);
     const data = imgData.data;
 
-    for (let z = 0; z < FOG_RES_Z; z++) {
-      for (let x = 0; x < FOG_RES_X; x++) {
-        const i = z * FOG_RES_X + x;
+    for (let z = 0; z < this.fogResZ; z++) {
+      for (let x = 0; x < this.fogResX; x++) {
+        const i = z * this.fogResX + x;
         const px = i * 4;
 
         if (this.visibility[i] === VISIBLE) {
-          // Fully visible — transparent
           data[px] = 0;
           data[px + 1] = 0;
           data[px + 2] = 0;
           data[px + 3] = 0;
         } else if (this.explored[i] === EXPLORED) {
-          // Previously explored — semi-transparent dark
           data[px] = 0;
           data[px + 1] = 0;
           data[px + 2] = 0;
-          data[px + 3] = 140; // ~55% opaque
+          data[px + 3] = 140;
         } else {
-          // Unexplored — nearly opaque dark
           data[px] = 0;
           data[px + 1] = 0;
           data[px + 2] = 0;
-          data[px + 3] = 220; // ~86% opaque
+          data[px + 3] = 220;
         }
       }
     }

@@ -41,6 +41,7 @@ export function applyMovement(
   velocity: Vec3,
   input: InputState,
   dt: number,
+  bounds?: { halfW: number; halfD: number },
 ): MovementResult {
   const yaw = input.yaw;
 
@@ -103,8 +104,8 @@ export function applyMovement(
   }
 
   // Map bounds
-  const halfW = MAP_WIDTH / 2;
-  const halfD = MAP_DEPTH / 2;
+  const halfW = bounds?.halfW ?? MAP_WIDTH / 2;
+  const halfD = bounds?.halfD ?? MAP_DEPTH / 2;
   newX = Math.max(-halfW, Math.min(halfW, newX));
   newZ = Math.max(-halfD, Math.min(halfD, newZ));
 

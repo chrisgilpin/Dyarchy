@@ -19,6 +19,9 @@ export class RTSCamera {
   centerX = 0;
   centerZ = 0;
 
+  private readonly halfW: number;
+  private readonly halfD: number;
+
   private readonly keys = {
     up: false,
     down: false,
@@ -29,7 +32,9 @@ export class RTSCamera {
   private mouseX = 0;
   private mouseY = 0;
 
-  constructor() {
+  constructor(mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH) {
+    this.halfW = mapWidth / 2;
+    this.halfD = mapDepth / 2;
     const aspect = window.innerWidth / window.innerHeight;
     this.camera = new THREE.OrthographicCamera(
       -this.zoom * aspect,
@@ -114,10 +119,8 @@ export class RTSCamera {
     this.centerZ += dz * speed * dt;
 
     // Clamp to map bounds
-    const halfW = MAP_WIDTH / 2;
-    const halfD = MAP_DEPTH / 2;
-    this.centerX = Math.max(-halfW, Math.min(halfW, this.centerX));
-    this.centerZ = Math.max(-halfD, Math.min(halfD, this.centerZ));
+    this.centerX = Math.max(-this.halfW, Math.min(this.halfW, this.centerX));
+    this.centerZ = Math.max(-this.halfD, Math.min(this.halfD, this.centerZ));
 
     this.updateCameraTransform();
   }
@@ -139,7 +142,11 @@ export class RTSCamera {
     this.camera.updateProjectionMatrix();
   }
 
-  /** Get world position on the ground plane from screen coordinates */
+  /** Optional terrain height function — set this so screenToWorld accounts for hills */
+  terrainHeight: ((x: number, z: number) => number) | null = null;
+
+  /** Get world position on the terrain from screen coordinates.
+   *  Iteratively refines the intersection to account for terrain elevation. */
   screenToWorld(screenX: number, screenY: number): THREE.Vector3 | null {
     const ndcX = (screenX / window.innerWidth) * 2 - 1;
     const ndcY = -(screenY / window.innerHeight) * 2 + 1;
@@ -147,9 +154,23 @@ export class RTSCamera {
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
 
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const up = new THREE.Vector3(0, 1, 0);
     const target = new THREE.Vector3();
-    const hit = raycaster.ray.intersectPlane(groundPlane, target);
-    return hit ? target : null;
+    let planeY = 0;
+
+    // Iterate: intersect plane at current Y, get terrain height there, repeat
+    for (let i = 0; i < 4; i++) {
+      const plane = new THREE.Plane(up, -planeY);
+      const hit = raycaster.ray.intersectPlane(plane, target);
+      if (!hit) return null;
+      if (!this.terrainHeight) return target;
+      planeY = this.terrainHeight(target.x, target.z);
+    }
+
+    // Final intersection at converged height
+    const finalPlane = new THREE.Plane(up, -planeY);
+    raycaster.ray.intersectPlane(finalPlane, target);
+    target.y = planeY;
+    return target;
   }
 }
