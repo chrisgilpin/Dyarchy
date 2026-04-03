@@ -780,7 +780,7 @@ export class AIPlayer {
       else continue;
 
       // Must have line-of-sight to the target
-      if (!state.hasLineOfSight(fps.position, e.position)) continue;
+      if (!state.hasLineOfSight(fps.position, e.position, 1.5, fps.id, e.id)) continue;
       candidates.push({ entity: e, priority, dist: dist3D(fps.position, e.position) });
     }
 
@@ -808,7 +808,7 @@ export class AIPlayer {
     this.fpsFireCooldown = 1 / weapon.fireRate;
 
     // Terrain blocks the shot — can't shoot through hills
-    if (!state.hasLineOfSight(fps.position, target.position)) return;
+    if (!state.hasLineOfSight(fps.position, target.position, 1.5, fps.id, target.id)) return;
 
     if (Math.random() < this.preset.fpsAccuracy) {
       this.stats.shotsHit++;

@@ -913,7 +913,7 @@ export class GameState {
         const d = dist3D(tower.position, ent.position);
         if (d > towerRange) continue;
         // Terrain must not block line-of-sight (tower eye height ~4 units)
-        if (!this.hasLineOfSight(tower.position, ent.position, 4)) continue;
+        if (!this.hasLineOfSight(tower.position, ent.position, 4, towerId, ent.id)) continue;
 
         // FPS player gets priority
         if (ent.entityType === 'fps_player' && d <= TOWER_FPS_PRIORITY_RANGE) {
@@ -982,7 +982,7 @@ export class GameState {
           if (ent.id === bestTarget.id) continue; // different from primary
           const d = dist3D(tower.position, ent.position);
           if (d >= secondDist) continue;
-          if (!this.hasLineOfSight(tower.position, ent.position, 4)) continue;
+          if (!this.hasLineOfSight(tower.position, ent.position, 4, towerId, ent.id)) continue;
           secondDist = d; secondTarget = ent;
         }
         if (secondTarget && turret.fireCooldown <= 0) {
@@ -3067,7 +3067,7 @@ export class GameState {
       const d = dist3D(unit.position, e.position);
       if (d >= closestDist) continue;
       // Must have line-of-sight through terrain
-      if (!this.hasLineOfSight(unit.position, e.position)) continue;
+      if (!this.hasLineOfSight(unit.position, e.position, 1.5, unit.id, e.id)) continue;
       // Limit fighters targeting a single FPS player: if 3+ nearby fighters are
       // already targeting this FPS player, skip them so they continue to towers/HQ
       if (e.entityType === 'fps_player' && unit.entityType === 'fighter') {
@@ -3270,7 +3270,7 @@ export class GameState {
    * Full line-of-sight check: terrain + buildings + static obstacles.
    * Use this instead of heightmap.hasLineOfSight directly.
    */
-  hasLineOfSight(from: Vec3, to: Vec3, eyeHeight: number = 1.5): boolean {
+  hasLineOfSight(from: Vec3, to: Vec3, eyeHeight: number = 1.5, excludeId?: string, excludeId2?: string): boolean {
     // First check terrain occlusion (cheap)
     if (!this.heightmap.hasLineOfSight(from, to, eyeHeight)) return false;
 
@@ -3287,7 +3287,7 @@ export class GameState {
     for (const building of this.entities.values()) {
       const col = BUILDING_COLLISION[building.entityType];
       if (!col || building.hp <= 0) continue;
-      // Quick XZ bounding check: is the building anywhere near the ray?
+      if (building.id === excludeId || building.id === excludeId2) continue;
       if (!this.rayIntersectsAABB(from.x, from.z, dx, dz, distXZ, fromY, toY,
         building.position.x, building.position.z, col.hx, col.hz, col.hy, col.cy + building.position.y)) continue;
       return false;

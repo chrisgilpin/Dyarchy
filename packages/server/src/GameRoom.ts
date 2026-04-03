@@ -1005,7 +1005,7 @@ export class GameRoom {
     if (target.entityType === 'main_base' && target.teamId === player.team) return;
     // Server-side LOS validation: reject hits through terrain
     const shooter = player.fpsEntityId ? this.state.entities.get(player.fpsEntityId) : null;
-    if (shooter && !this.state.hasLineOfSight(shooter.position, target.position)) return;
+    if (shooter && !this.state.hasLineOfSight(shooter.position, target.position, 1.5, shooter.id, target.id)) return;
     // Apply Hero Academy damage multiplier (not for vehicle weapons)
     let damage = msg.damage as number;
     if (player.team) {
