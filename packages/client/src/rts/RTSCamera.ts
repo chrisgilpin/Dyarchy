@@ -3,14 +3,13 @@ import { MAP_WIDTH, MAP_DEPTH } from '@dyarchy/shared';
 
 const PAN_SPEED = 40;
 const ZOOM_SPEED = 5;
-const MIN_ZOOM = 15;
-const MAX_ZOOM = 80;
+const MIN_ZOOM = 35;
+const MAX_ZOOM = 46;
 const EDGE_PAN_MARGIN = 30;
 
-// Starcraft-style isometric angle: camera pitched ~55 degrees from horizontal
-const CAMERA_PITCH = Math.PI * 0.30; // ~54 degrees from horizontal
-const CAMERA_HEIGHT_RATIO = Math.sin(CAMERA_PITCH);
-const CAMERA_DEPTH_RATIO = Math.cos(CAMERA_PITCH);
+// Camera pitch interpolates from 55° (zoomed out) to 25° (zoomed in)
+const PITCH_ZOOMED_OUT = 55 * (Math.PI / 180); // ~0.96 rad
+const PITCH_ZOOMED_IN = 25 * (Math.PI / 180);  // ~0.44 rad
 
 export class RTSCamera {
   readonly camera: THREE.OrthographicCamera;
@@ -94,6 +93,7 @@ export class RTSCamera {
     this.zoom += e.deltaY > 0 ? ZOOM_SPEED : -ZOOM_SPEED;
     this.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.zoom));
     this.updateProjection();
+    this.updateCameraTransform();
   };
 
   update(dt: number): void {
@@ -126,9 +126,11 @@ export class RTSCamera {
   }
 
   private updateCameraTransform(): void {
-    // Position camera offset behind and above the center point
-    const offsetY = 100 * CAMERA_HEIGHT_RATIO;
-    const offsetZ = 100 * CAMERA_DEPTH_RATIO;
+    // Interpolate pitch: zoomed out (MAX_ZOOM) = 55°, zoomed in (MIN_ZOOM) = 25°
+    const t = (this.zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM); // 0 = zoomed in, 1 = zoomed out
+    const pitch = PITCH_ZOOMED_IN + t * (PITCH_ZOOMED_OUT - PITCH_ZOOMED_IN);
+    const offsetY = 100 * Math.sin(pitch);
+    const offsetZ = 100 * Math.cos(pitch);
     this.camera.position.set(this.centerX, offsetY, this.centerZ + offsetZ);
     this.camera.lookAt(this.centerX, 0, this.centerZ);
   }

@@ -9,10 +9,57 @@ import { Connection } from './network/Connection.js';
 import { SnapshotRenderer } from './network/SnapshotRenderer.js';
 import { SoundManager } from './audio/SoundManager.js';
 import { isMobile } from './fps/TouchControls.js';
+import { VRManager, saveButtonMap } from './vr/VRManager.js';
+import type { GamepadButtonMap } from './vr/VRManager.js';
+import { createWeaponModel } from './fps/Weapons.js';
 
 // ===================== DOM Elements =====================
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
+
+// ===================== Shared Renderer & VR =====================
+// A single persistent WebGLRenderer used by all SceneManagers.
+// Required for WebXR — setAnimationLoop must stay on one renderer.
+const sharedRenderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+sharedRenderer.setSize(window.innerWidth, window.innerHeight);
+sharedRenderer.setPixelRatio(window.devicePixelRatio);
+
+const vrManager = new VRManager(sharedRenderer);
+const vrButton = vrManager.createButton();
+document.body.appendChild(vrButton);
+
+// Track VR weapon model separately (cloned from FPSController's current weapon)
+let vrWeaponId: string | null = null;
+
+// When VR session starts/ends, toggle VR mode on the FPS controller
+sharedRenderer.xr.addEventListener('sessionstart', () => {
+  if (fpsController) {
+    fpsController.vrMode = true;
+    fpsController.vrCameraRig = vrManager.cameraRig;
+  }
+  // If in RTS, switch to FPS for VR
+  if (activeRole === 'rts' && fpsController) {
+    setRole('fps');
+  }
+  // Hide touch controls in VR — input comes from gamepad
+  document.getElementById('touch-controls')?.style.setProperty('display', 'none');
+});
+sharedRenderer.xr.addEventListener('sessionend', () => {
+  if (fpsController) {
+    fpsController.vrMode = false;
+    fpsController.vrGamepadInput = null;
+  }
+  vrWeaponId = null;
+  vrManager.setWeaponModel(null);
+  // Reset rig to origin so non-VR camera positioning works normally
+  vrManager.cameraRig.position.set(0, 0, 0);
+  vrManager.cameraRig.rotation.set(0, 0, 0);
+  // Restore touch controls if on mobile and in FPS mode
+  if (isMobile() && activeRole === 'fps') {
+    document.getElementById('touch-controls')?.style.setProperty('display', 'block');
+  }
+});
+
 const overlay = document.getElementById('overlay') as HTMLDivElement;
 const roleSelect = document.getElementById('role-select') as HTMLDivElement;
 const crosshair = document.getElementById('crosshair') as HTMLDivElement;
@@ -56,6 +103,141 @@ let activeRole: Role = null;
 let playerCount = 1; // track how many humans are in the game
 let teamPlayerCount = 1; // how many humans on our team
 let lastFighterLevel = 0;
+let latestPlayerStats: import('@dyarchy/shared').PlayerGameStats[] = [];
+
+// ===================== Scoreboard Overlay =====================
+
+const scoreboardEl = document.createElement('div');
+scoreboardEl.id = 'scoreboard-overlay';
+scoreboardEl.style.cssText = `
+  position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.75); z-index: 40; font-family: system-ui, sans-serif;
+`;
+document.body.appendChild(scoreboardEl);
+
+function updateScoreboard(): void {
+  if (latestPlayerStats.length === 0) {
+    scoreboardEl.innerHTML = '<div style="color:#aaa; font-size:18px;">No stats available yet</div>';
+    return;
+  }
+
+  const rows = latestPlayerStats
+    .slice()
+    .sort((a, b) => b.playerKills - a.playerKills || (b.playerKills / Math.max(1, b.deaths)) - (a.playerKills / Math.max(1, a.deaths)));
+
+  const header = `<tr style="background:rgba(255,255,255,0.1);">
+    <th style="padding:6px 12px; text-align:left;">Player</th>
+    <th style="padding:6px 12px;">Kills</th>
+    <th style="padding:6px 12px;">Deaths</th>
+    <th style="padding:6px 12px;">K/D</th>
+    <th style="padding:6px 12px;">CPU Kills</th>
+    <th style="padding:6px 12px;">Bldgs Destroyed</th>
+    <th style="padding:6px 12px;">Crystals</th>
+    <th style="padding:6px 12px;">Bldgs Built</th>
+    <th style="padding:6px 12px;">Upgrades</th>
+  </tr>`;
+
+  const body = rows.map(s => {
+    const kd = s.deaths === 0 ? s.playerKills.toFixed(1) : (s.playerKills / s.deaths).toFixed(1);
+    return `<tr style="border-top:1px solid #333;">
+      <td style="padding:6px 12px; text-align:left; color:#fff; font-weight:bold;">${escapeHtml(s.playerName)}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.playerKills}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.deaths}</td>
+      <td style="padding:6px 12px; text-align:center;">${kd}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.cpuUnitsKilled}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.buildingsDestroyed}</td>
+      <td style="padding:6px 12px; text-align:center; color:#f0c040;">${s.crystalsCollected}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.buildingsBuilt}</td>
+      <td style="padding:6px 12px; text-align:center;">${s.upgradeCount}</td>
+    </tr>`;
+  }).join('');
+
+  scoreboardEl.innerHTML = `
+    <div style="background:rgba(0,0,0,0.85); border:1px solid #555; border-radius:8px; padding:16px 8px; max-width:90vw; overflow-x:auto;">
+      <div style="text-align:center; color:#ccc; font-size:14px; margin-bottom:10px; font-weight:bold; letter-spacing:1px;">SCOREBOARD</div>
+      <table style="border-collapse:collapse; color:#ccc; font-size:14px; width:100%;">
+        ${header}${body}
+      </table>
+    </div>
+  `;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+let scoreboardVisible = false;
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Backquote' && activeRole && !scoreboardVisible) {
+    scoreboardVisible = true;
+    updateScoreboard();
+    scoreboardEl.style.display = 'flex';
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Backquote' && scoreboardVisible) {
+    scoreboardVisible = false;
+    scoreboardEl.style.display = 'none';
+  }
+});
+
+/** Show a dramatic full-screen hero upgrade announcement (blue themed) */
+function showHeroUpgradeAnnouncement(upgradeType: string, level: number): void {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; z-index: 50;
+    pointer-events: none; animation: fighterLevelFade 3s ease-out forwards;
+  `;
+
+  const titles: Record<string, string> = {
+    hero_hp: 'HERO HP UPGRADED',
+    hero_damage: 'HERO DAMAGE UPGRADED',
+    hero_regen: 'AUTO-REGEN UNLOCKED',
+  };
+  const title = document.createElement('div');
+  title.textContent = titles[upgradeType] ?? 'HERO UPGRADED';
+  title.style.cssText = `
+    color: #4488ff; font-size: 52px; font-weight: 900; font-family: system-ui, sans-serif;
+    text-shadow: 0 0 30px rgba(50,100,255,0.8), 0 0 60px rgba(50,100,255,0.4), 0 4px 8px rgba(0,0,0,0.5);
+    letter-spacing: 4px; text-transform: uppercase;
+    animation: fighterTextSlam 0.5s cubic-bezier(0.2, 0, 0.2, 1);
+  `;
+  overlay.appendChild(title);
+
+  const subtitles: Record<string, string[]> = {
+    hero_hp: ['+25% Max HP', '+100% Max HP', '+200% Max HP'],
+    hero_damage: ['+25% Weapon Damage', '+100% Weapon Damage', '+200% Weapon Damage'],
+    hero_regen: ['2% HP/s after 7s without damage'],
+  };
+  const subTexts = subtitles[upgradeType];
+  const subText = subTexts ? (level > 0 ? subTexts[Math.min(level - 1, subTexts.length - 1)] : subTexts[0]) : '';
+  if (subText) {
+    const subtitle = document.createElement('div');
+    subtitle.textContent = level > 0 ? `Level ${level} — ${subText}` : subText;
+    subtitle.style.cssText = `
+      color: #88bbff; font-size: 22px; font-weight: bold; font-family: system-ui, sans-serif;
+      text-shadow: 0 0 15px rgba(50,100,255,0.6), 0 2px 4px rgba(0,0,0,0.5);
+      margin-top: 12px; opacity: 0; animation: fighterSubFade 2s 0.4s ease-out forwards;
+    `;
+    overlay.appendChild(subtitle);
+  }
+
+  // Reuse same keyframe animations as fighter level-up
+  if (!document.getElementById('fighter-level-styles')) {
+    const style = document.createElement('style');
+    style.id = 'fighter-level-styles';
+    style.textContent = `
+      @keyframes fighterLevelFade { 0% { opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }
+      @keyframes fighterTextSlam { 0% { transform: scale(2.5); opacity: 0; } 50% { transform: scale(0.9); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+      @keyframes fighterSubFade { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: translateY(0); } }
+    `;
+    document.head.appendChild(style);
+  }
+
+  document.body.appendChild(overlay);
+  setTimeout(() => overlay.remove(), 3500);
+}
 
 /** Show a dramatic full-screen fighter level-up announcement */
 function showFighterLevelUp(level: number): void {
@@ -115,10 +297,13 @@ function initOnlineGame(teamId: 1 | 2 = 1, mapConfig?: MapConfig): void {
 
   const mc = mapConfig ?? MEADOW_MAP;
   // For online: create a bare scene (no pre-placed entities — server owns those)
-  sceneManager = new SceneManager(canvas, true, mc); // skipEntities=true
+  sceneManager = new SceneManager(canvas, true, mc, sharedRenderer); // skipEntities=true
+
+  // Attach VR camera rig to the new scene
+  vrManager.attachToScene(sceneManager.scene, sceneManager.camera);
 
   const spawn = mc.teamSpawns[teamId];
-  const spawnVec = new THREE.Vector3(spawn.x, GROUND_Y + PLAYER_HEIGHT, spawn.z);
+  const spawnVec = new THREE.Vector3(spawn.x, sceneManager.terrainHeight(spawn.x, spawn.z) + PLAYER_HEIGHT, spawn.z);
 
   fpsController = new FPSController(
     sceneManager.camera, canvas, spawnVec, sceneManager.obstacleBoxes, sceneManager,
@@ -191,10 +376,13 @@ function initOnlineGame(teamId: 1 | 2 = 1, mapConfig?: MapConfig): void {
     if (isOurs && entityType === 'armory') {
       fpsController.unlockArmory();
     }
+    if (isOurs && entityType === 'hero_academy') {
+      fpsController.hasHeroAcademy = true;
+    }
     // Notify FPS player about key buildings
     if (isOurs && activeRole === 'fps') {
       const names: Record<string, string> = {
-        armory: 'Armory built!', garage: 'Garage built!', main_base: 'New HQ built!',
+        armory: 'Armory built!', garage: 'Garage built!', main_base: 'New HQ built!', hero_academy: 'Hero Academy built!',
       };
       if (names[entityType]) fpsController.showNotification(names[entityType], '#4c4');
     }
@@ -242,11 +430,19 @@ function setRole(role: Role): void {
   roleSelect.style.display = 'none';
 
   if (role === 'fps') {
+    // Enable VR mode if currently presenting
+    fpsController.vrMode = vrManager.isPresenting;
+    fpsController.vrCameraRig = vrManager.cameraRig;
     fpsController.enable();
-    overlay.style.display = 'flex';
-    crosshair.style.display = 'block';
+    overlay.style.display = vrManager.isPresenting ? 'none' : 'flex';
+    crosshair.style.display = vrManager.isPresenting ? 'none' : 'block';
     sceneManager.setCloudsVisible(true);
   } else {
+    // VR only supports FPS — if switching to RTS, disable VR on controller
+    if (fpsController) {
+      fpsController.vrMode = false;
+      fpsController.vrGamepadInput = null;
+    }
     overlay.style.display = 'none';
     crosshair.style.display = 'none';
     rtsController.enable();
@@ -258,11 +454,12 @@ function setRole(role: Role): void {
 
 async function connectToServer(): Promise<Connection> {
   const conn = new Connection();
-  // In production, WS runs on the same host/port. In dev, use :3001
+  // In production, WS runs on the same host/port.
+  // In dev, use the Vite proxy at /ws (handles both HTTP and HTTPS).
   const isDev = window.location.port === '3000';
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = isDev
-    ? `ws://${window.location.hostname}:3001`
+    ? `${protocol}//${window.location.host}/ws`
     : `${protocol}//${window.location.host}`;
   await conn.connect(wsUrl);
   return conn;
@@ -434,6 +631,9 @@ function handleServerMessage(msg: ServerMessage): void {
       if (rtsController) {
         rtsController.localTeamId = msg.yourTeam;
         rtsController.teamPlayerCount = msg.teamPlayerCount;
+        // Center camera on team's base
+        const teamSpawn = getMapConfig(msg.mapId).teamSpawns[msg.yourTeam];
+        rtsController.setCameraCenter(teamSpawn.x, teamSpawn.z);
       }
       teamPlayerCount = msg.teamPlayerCount;
       if (fpsController) {
@@ -451,6 +651,7 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
 
     case 'snapshot':
+      if (msg.playerStats) latestPlayerStats = msg.playerStats;
       if (snapshotRenderer) {
         snapshotRenderer.applySnapshot(msg);
 
@@ -478,6 +679,13 @@ function handleServerMessage(msg: ServerMessage): void {
           showFighterLevelUp(msg.fighterLevel);
         }
         lastFighterLevel = msg.fighterLevel;
+        // Sync hero upgrade levels to FPS controller for HUD badges
+        if (fpsController) {
+          const t = fpsController.localTeamId;
+          fpsController.heroHpLevel = msg.heroHpLevel?.[t] ?? 0;
+          fpsController.heroDmgLevel = msg.heroDmgLevel?.[t] ?? 0;
+          fpsController.heroRegenActive = msg.heroRegen?.[t] ?? false;
+        }
       }
       break;
 
@@ -487,9 +695,13 @@ function handleServerMessage(msg: ServerMessage): void {
       gameOverScreen.style.display = 'flex';
       if (activeRole === 'fps') fpsController.disable();
       if (activeRole === 'rts') rtsController.disable();
+      rtsController.gameOver = true;
       activeRole = null;
       crosshair.style.display = 'none';
       overlay.style.display = 'none';
+      // Clean up debug overlays
+      if (rtsBrainOverlay) { rtsBrainOverlay.remove(); rtsBrainOverlay = null; }
+      cheatRtsBrain = false;
       // Play win/lose sound
       if (msg.winnerTeam === 1) SoundManager.instance().victory();
       else SoundManager.instance().gameOver();
@@ -546,6 +758,10 @@ function handleServerMessage(msg: ServerMessage): void {
       showChatMessage(msg.from, msg.text);
       break;
 
+    case 'hero_upgrade_complete' as any:
+      showHeroUpgradeAnnouncement((msg as any).upgradeType, (msg as any).level);
+      break;
+
     case 'ping' as any:
       // Teammate sent a map ping — show the beacon
       if (rtsController && (msg as any).x !== undefined) {
@@ -561,6 +777,30 @@ function handleServerMessage(msg: ServerMessage): void {
 
     case 'turret_hit' as any:
       if (fpsController) fpsController.showHitMarker((msg as any).targetId);
+      break;
+
+    case 'rocket_fired' as any:
+      // Another player fired a rocket — spawn visual-only projectile
+      if (fpsController) {
+        fpsController.spawnRemoteRocket((msg as any).origin, (msg as any).direction, (msg as any).shooterId);
+      } else if (snapshotRenderer) {
+        // RTS view: spawn rocket in the scene directly
+        spawnRtsRocket((msg as any).origin, (msg as any).direction);
+      }
+      break;
+
+    case 'heli_impact' as any: {
+      // Another player's helicopter minigun hit — spawn debris for all to see
+      const pt = new THREE.Vector3((msg as any).x, (msg as any).y, (msg as any).z);
+      const kind = (msg as any).kind as 'ground' | 'building' | 'blood';
+      if (fpsController) {
+        fpsController.spawnImpactDebris(pt, kind);
+      }
+      break;
+    }
+
+    case 'rts_brain_debug' as any:
+      updateRtsBrainOverlay((msg as any).plans);
       break;
 
     case 'lobby_list':
@@ -626,33 +866,64 @@ function handleRoomState(msg: RoomStateMsg): void {
   lobbyStatus.textContent = `Code: ${msg.roomCode}${msg.visibility === 'private' ? ' (Private)' : ''}`;
   playerCount = msg.players.length;
 
+  // Switch preview background when map selection changes
+  switchPreviewMap(msg.mapId);
+
   // Update map selection highlight
+  const mapColors: Record<string, { active: string; border: string; inactive: string }> = {
+    meadow: { active: 'rgba(60,120,60,0.35)', border: '#4a8', inactive: 'rgba(60,120,60,0.2)' },
+    frostpeak: { active: 'rgba(80,100,140,0.35)', border: '#68a', inactive: 'rgba(80,100,140,0.2)' },
+    blood_canyon: { active: 'rgba(160,100,40,0.35)', border: '#a84', inactive: 'rgba(160,100,40,0.2)' },
+    ironhold: { active: 'rgba(80,50,30,0.35)', border: '#a64', inactive: 'rgba(60,40,30,0.2)' },
+  };
   document.querySelectorAll('.map-card').forEach(card => {
-    const mapId = card.getAttribute('data-map');
+    const mapId = card.getAttribute('data-map') ?? '';
+    const colors = mapColors[mapId] ?? mapColors.meadow;
     if (mapId === msg.mapId) {
-      (card as HTMLElement).style.borderColor = mapId === 'meadow' ? '#4a8' : '#68a';
-      (card as HTMLElement).style.background = mapId === 'meadow'
-        ? 'rgba(60,120,60,0.35)' : 'rgba(80,100,140,0.35)';
+      (card as HTMLElement).style.borderColor = colors.border;
+      (card as HTMLElement).style.background = colors.active;
     } else {
       (card as HTMLElement).style.borderColor = '#334';
-      (card as HTMLElement).style.background = mapId === 'meadow'
-        ? 'rgba(60,120,60,0.2)' : 'rgba(80,100,140,0.2)';
+      (card as HTMLElement).style.background = colors.inactive;
     }
   });
 
-  // Update lobby slot grid with player names
+  // Update lobby slot grid with player names and CPU toggles
   document.querySelectorAll('.lobby-slot').forEach(btn => {
     const slotTeam = parseInt(btn.getAttribute('data-team')!);
-    const slotRole = btn.getAttribute('data-role');
+    const slotRole = btn.getAttribute('data-role')!;
     const playerInSlot = msg.players.find(p => p.team === slotTeam && p.role === slotRole);
     const nameEl = btn.querySelector('.slot-player') as HTMLDivElement;
+    const cpuKey = `${slotTeam}_${slotRole}`;
+    const cpuDiff = msg.cpuSlots?.[cpuKey] ?? null;
+
+    // Find the matching CPU toggle button
+    const cpuBtn = document.querySelector(`.cpu-toggle[data-team="${slotTeam}"][data-role="${slotRole}"]`) as HTMLButtonElement | null;
 
     if (playerInSlot) {
       nameEl.textContent = playerInSlot.name + (playerInSlot.ready ? ' [Ready]' : '');
       (btn as HTMLElement).style.borderColor = slotTeam === 1 ? '#4488dd' : '#dd4444';
+      if (cpuBtn) cpuBtn.style.display = 'none';
+    } else if (cpuDiff) {
+      // CPU is filling this slot
+      const label = cpuLabels[cpuDiff] ?? cpuLabels[''];
+      nameEl.textContent = label.text;
+      (btn as HTMLElement).style.borderColor = label.color;
+      if (cpuBtn) {
+        cpuBtn.style.display = 'block';
+        cpuBtn.textContent = label.text;
+        cpuBtn.style.color = label.color;
+        cpuBtn.style.borderColor = label.color;
+      }
     } else {
       nameEl.textContent = '— open —';
       (btn as HTMLElement).style.borderColor = '#334';
+      if (cpuBtn) {
+        cpuBtn.style.display = 'block';
+        cpuBtn.textContent = 'CPU: Off';
+        cpuBtn.style.color = '#666';
+        cpuBtn.style.borderColor = '#333';
+      }
     }
   });
 }
@@ -693,6 +964,29 @@ document.querySelectorAll('.lobby-slot').forEach(btn => {
     const team = parseInt(btn.getAttribute('data-team')!) as 1 | 2;
     const role = btn.getAttribute('data-role') as 'fps' | 'rts';
     connection?.send({ type: 'select_role', team, role });
+  });
+});
+
+// CPU toggle buttons — cycle Off → Easy → Medium → Hard → Off
+const cpuCycle: (string | null)[] = [null, 'easy', 'medium', 'hard'];
+const cpuLabels: Record<string, { text: string; color: string }> = {
+  '': { text: 'CPU: Off', color: '#666' },
+  'easy': { text: 'CPU: Easy', color: '#4a4' },
+  'medium': { text: 'CPU: Medium', color: '#da4' },
+  'hard': { text: 'CPU: Hard', color: '#d44' },
+};
+document.querySelectorAll('.cpu-toggle').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const team = btn.getAttribute('data-team')!;
+    const role = btn.getAttribute('data-role')!;
+    const slot = `${team}_${role}`;
+    // Read current state from button text and advance to next
+    const currentText = btn.textContent?.trim() ?? '';
+    const currentKey = Object.entries(cpuLabels).find(([, v]) => v.text === currentText)?.[0] ?? '';
+    const idx = cpuCycle.indexOf(currentKey || null);
+    const next = cpuCycle[(idx + 1) % cpuCycle.length];
+    connection?.send({ type: 'configure_cpu', slot, difficulty: next } as any);
   });
 });
 
@@ -750,6 +1044,9 @@ document.getElementById('btn-mute')!.addEventListener('click', () => {
   sm.toggleMute();
   document.getElementById('btn-mute')!.textContent = sm.muted ? 'Sound: OFF [M]' : 'Sound: ON [M]';
 });
+
+// Controller config button
+document.getElementById('btn-controller-config')!.addEventListener('click', () => toggleControllerConfig());
 
 overlay.addEventListener('click', () => {
   if (isMobile()) {
@@ -847,6 +1144,49 @@ function openChat(target: 'team' | 'all'): void {
   chatInput.focus();
 }
 
+function spawnRtsRocket(origin: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }): void {
+  if (!snapshotRenderer) return;
+  const scene = snapshotRenderer.sceneManager.scene;
+  const sm = snapshotRenderer.sceneManager;
+  const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+
+  const rocketGroup = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.06, 0.5, 6),
+    new THREE.MeshLambertMaterial({ color: 0x556633 }),
+  );
+  body.rotation.x = Math.PI / 2;
+  rocketGroup.add(body);
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.06, 0.3, 5),
+    new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.8 }),
+  );
+  flame.rotation.x = Math.PI / 2;
+  flame.position.z = -0.3;
+  rocketGroup.add(flame);
+
+  rocketGroup.position.set(origin.x, origin.y, origin.z);
+  rocketGroup.lookAt(origin.x + dir.x, origin.y + dir.y, origin.z + dir.z);
+  scene.add(rocketGroup);
+
+  const ROCKET_SPEED = 20;
+  let traveled = 0;
+  const animate = () => {
+    const step = ROCKET_SPEED * 0.016;
+    rocketGroup.position.add(dir.clone().multiplyScalar(step));
+    traveled += step;
+    (flame.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.random() * 0.5;
+    const rp = rocketGroup.position;
+    const terrainY = sm.terrainHeight(rp.x, rp.z);
+    if (rp.y <= terrainY + 0.2 || traveled > 75) {
+      scene.remove(rocketGroup);
+      return;
+    }
+    requestAnimationFrame(animate);
+  };
+  requestAnimationFrame(animate);
+}
+
 function showChatMessage(from: string, text: string): void {
   chatLog.style.display = '';
   const line = document.createElement('div');
@@ -882,8 +1222,46 @@ let cheatUnitsFrozen = false;
 let cheatInstantBuild = false;
 let cheatTurboJeep = false;
 let cheatInvincible = false;
+let cheatGameSpeed = 1;
 let cheatKeyPresses = 0;
 let cheatKeyTimer = 0;
+let cheatRtsBrain = false;
+let rtsBrainOverlay: HTMLDivElement | null = null;
+
+function updateRtsBrainOverlay(plans: Record<number, { name: string; actions: string[] }>): void {
+  if (!cheatRtsBrain) {
+    if (rtsBrainOverlay) { rtsBrainOverlay.remove(); rtsBrainOverlay = null; }
+    return;
+  }
+
+  if (!rtsBrainOverlay) {
+    rtsBrainOverlay = document.createElement('div');
+    rtsBrainOverlay.style.cssText = `
+      position:fixed; top:10px; right:10px; z-index:50; pointer-events:none;
+      font-family:monospace; font-size:13px; max-width:340px;
+    `;
+    document.body.appendChild(rtsBrainOverlay);
+  }
+
+  let html = '';
+  for (const [teamId, plan] of Object.entries(plans)) {
+    const teamColor = Number(teamId) === 1 ? '#4af' : '#f55';
+    const teamLabel = Number(teamId) === 1 ? 'Blue' : 'Red';
+    html += `<div style="background:rgba(0,0,0,0.8);border:1px solid ${teamColor};border-radius:6px;padding:8px 12px;margin-bottom:6px;">`;
+    html += `<div style="color:${teamColor};font-weight:bold;margin-bottom:4px;">${teamLabel} RTS Brain — ${plan.name}</div>`;
+    if (plan.actions.length === 0) {
+      html += `<div style="color:#888;">No planned actions</div>`;
+    } else {
+      for (let i = 0; i < plan.actions.length; i++) {
+        const color = i === 0 ? '#ff0' : '#ccc';
+        html += `<div style="color:${color};padding:1px 0;">${i + 1}. ${plan.actions[i]}</div>`;
+      }
+    }
+    html += `</div>`;
+  }
+
+  rtsBrainOverlay.innerHTML = html;
+}
 
 function toggleCheatMenu(): void {
   if (cheatMenuEl) {
@@ -918,98 +1296,92 @@ function toggleCheatMenu(): void {
     return btn;
   };
 
+  // Helper: for toggle buttons, update label after click
+  const toggleBtn = (btn: HTMLButtonElement, onLabel: string, offLabel: string, isOn: boolean) => {
+    btn.textContent = isOn ? onLabel : offLabel;
+  };
+
   // Option A: Get 5000 crystals
   cheatMenuEl.appendChild(makeBtn('+ 5000 Crystals', () => {
     if (connection) {
       for (let i = 0; i < 5; i++) connection.send({ type: 'cheat_crystals' } as any);
     }
     if (fpsController) fpsController.cheatResetCooldowns();
-    toggleCheatMenu();
   }));
 
   // Option B: Toggle friendly fighters
-  cheatMenuEl.appendChild(makeBtn(
+  const friendlyBtn = makeBtn(
     cheatFriendlyWavesStopped ? 'Resume Friendly Fighters' : 'Stop Friendly Fighters',
     () => {
       cheatFriendlyWavesStopped = !cheatFriendlyWavesStopped;
-      if (connection) {
-        connection.send({ type: 'cheat_toggle_waves', side: 'friendly', stopped: cheatFriendlyWavesStopped } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_toggle_waves', side: 'friendly', stopped: cheatFriendlyWavesStopped } as any);
+      toggleBtn(friendlyBtn, 'Resume Friendly Fighters', 'Stop Friendly Fighters', cheatFriendlyWavesStopped);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(friendlyBtn);
 
   // Option C: Toggle enemy fighters
-  cheatMenuEl.appendChild(makeBtn(
+  const enemyBtn = makeBtn(
     cheatEnemyWavesStopped ? 'Resume Enemy Fighters' : 'Stop Enemy Fighters',
     () => {
       cheatEnemyWavesStopped = !cheatEnemyWavesStopped;
-      if (connection) {
-        connection.send({ type: 'cheat_toggle_waves', side: 'enemy', stopped: cheatEnemyWavesStopped } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_toggle_waves', side: 'enemy', stopped: cheatEnemyWavesStopped } as any);
+      toggleBtn(enemyBtn, 'Resume Enemy Fighters', 'Stop Enemy Fighters', cheatEnemyWavesStopped);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(enemyBtn);
 
   // Option D: Freeze all units
-  cheatMenuEl.appendChild(makeBtn(
+  const freezeBtn = makeBtn(
     cheatUnitsFrozen ? 'Unfreeze All Units' : 'Freeze All Units',
     () => {
       cheatUnitsFrozen = !cheatUnitsFrozen;
-      if (connection) {
-        connection.send({ type: 'cheat_freeze', frozen: cheatUnitsFrozen } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_freeze', frozen: cheatUnitsFrozen } as any);
+      toggleBtn(freezeBtn, 'Unfreeze All Units', 'Freeze All Units', cheatUnitsFrozen);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(freezeBtn);
 
   // Option E: Instant build/train/upgrade
-  cheatMenuEl.appendChild(makeBtn(
+  const instantBtn = makeBtn(
     cheatInstantBuild ? 'Disable Instant Build' : 'Enable Instant Build',
     () => {
       cheatInstantBuild = !cheatInstantBuild;
-      if (connection) {
-        connection.send({ type: 'cheat_instant_build', enabled: cheatInstantBuild } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_instant_build', enabled: cheatInstantBuild } as any);
+      toggleBtn(instantBtn, 'Disable Instant Build', 'Enable Instant Build', cheatInstantBuild);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(instantBtn);
 
   // Option F: Spawn Jeep near blue HQ
   cheatMenuEl.appendChild(makeBtn('Spawn Jeep', () => {
-    if (connection) {
-      connection.send({ type: 'cheat_spawn_jeep' } as any);
-    }
-    toggleCheatMenu();
+    if (connection) connection.send({ type: 'cheat_spawn_jeep' } as any);
   }));
 
   // Option G: Turbo Jeep toggle
-  cheatMenuEl.appendChild(makeBtn(
+  const turboBtn = makeBtn(
     cheatTurboJeep ? 'Disable Turbo Jeep' : 'Enable Turbo Jeep',
     () => {
       cheatTurboJeep = !cheatTurboJeep;
-      if (connection) {
-        connection.send({ type: 'cheat_turbo_jeep', enabled: cheatTurboJeep } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_turbo_jeep', enabled: cheatTurboJeep } as any);
+      toggleBtn(turboBtn, 'Disable Turbo Jeep', 'Enable Turbo Jeep', cheatTurboJeep);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(turboBtn);
 
   // Option H: FPS Invincibility toggle
-  cheatMenuEl.appendChild(makeBtn(
+  const invincBtn = makeBtn(
     cheatInvincible ? 'Disable Invincibility' : 'Enable Invincibility',
     () => {
       cheatInvincible = !cheatInvincible;
-      if (connection) {
-        connection.send({ type: 'cheat_invincible', enabled: cheatInvincible } as any);
-      }
-      toggleCheatMenu();
+      if (connection) connection.send({ type: 'cheat_invincible', enabled: cheatInvincible } as any);
+      toggleBtn(invincBtn, 'Disable Invincibility', 'Enable Invincibility', cheatInvincible);
     },
-  ));
+  );
+  cheatMenuEl.appendChild(invincBtn);
 
   // Option I: Equip Weapon (sub-menu)
   cheatMenuEl.appendChild(makeBtn('Equip Weapon...', () => {
-    // Replace menu contents with weapon list
     const children = [...cheatMenuEl!.children];
     children.forEach(c => (c as HTMLElement).style.display = 'none');
 
@@ -1028,12 +1400,10 @@ function toggleCheatMenu(): void {
     for (const w of allWeapons) {
       cheatMenuEl!.appendChild(makeBtn(w.label, () => {
         if (fpsController) fpsController.cheatEquipWeapon(w.id);
-        toggleCheatMenu();
       }));
     }
 
     const backBtn = makeBtn('Back', () => {
-      // Remove weapon sub-menu elements and restore main menu
       while (cheatMenuEl!.lastChild !== children[children.length - 1]) {
         cheatMenuEl!.removeChild(cheatMenuEl!.lastChild!);
       }
@@ -1043,15 +1413,18 @@ function toggleCheatMenu(): void {
     cheatMenuEl!.appendChild(backBtn);
   }));
 
-  // Option I: No weapon cooldown toggle
-  const noCdLabel = fpsController?.cheatNoCooldown ? 'Disable No Cooldown' : 'Enable No Cooldown';
-  cheatMenuEl.appendChild(makeBtn(noCdLabel, () => {
-    if (fpsController) {
-      fpsController.cheatNoCooldown = !fpsController.cheatNoCooldown;
-      fpsController.cheatResetCooldowns();
-    }
-    toggleCheatMenu();
-  }));
+  // Option: No weapon cooldown toggle
+  const noCdBtn = makeBtn(
+    fpsController?.cheatNoCooldown ? 'Disable No Cooldown' : 'Enable No Cooldown',
+    () => {
+      if (fpsController) {
+        fpsController.cheatNoCooldown = !fpsController.cheatNoCooldown;
+        fpsController.cheatResetCooldowns();
+        toggleBtn(noCdBtn, 'Disable No Cooldown', 'Enable No Cooldown', fpsController.cheatNoCooldown);
+      }
+    },
+  );
+  cheatMenuEl.appendChild(noCdBtn);
 
   // Option: Select Hero (sub-menu)
   cheatMenuEl.appendChild(makeBtn('Select Hero...', () => {
@@ -1070,17 +1443,13 @@ function toggleCheatMenu(): void {
     ];
     for (const h of heroes) {
       cheatMenuEl!.appendChild(makeBtn(h.label, () => {
-        if (connection) {
-          connection.send({ type: 'cheat_set_hero', heroType: h.type } as any);
-        }
+        if (connection) connection.send({ type: 'cheat_set_hero', heroType: h.type } as any);
         if (fpsController) fpsController.heroType = h.type;
-        toggleCheatMenu();
       }));
     }
     cheatMenuEl!.appendChild(makeBtn('Clear Hero', () => {
       if (connection) connection.send({ type: 'cheat_set_hero', heroType: null } as any);
       if (fpsController) fpsController.heroType = null;
-      toggleCheatMenu();
     }));
 
     const backBtn2 = makeBtn('Back', () => {
@@ -1093,12 +1462,37 @@ function toggleCheatMenu(): void {
     cheatMenuEl!.appendChild(backBtn2);
   }));
 
+  // Option: RTS Brain debug overlay
+  const rtsBrainBtn = makeBtn(
+    cheatRtsBrain ? 'Hide RTS Brain' : 'Show RTS Brain',
+    () => {
+      cheatRtsBrain = !cheatRtsBrain;
+      if (connection) connection.send({ type: 'cheat_rts_brain', enabled: cheatRtsBrain } as any);
+      if (!cheatRtsBrain && rtsBrainOverlay) {
+        rtsBrainOverlay.remove();
+        rtsBrainOverlay = null;
+      }
+      toggleBtn(rtsBrainBtn, 'Hide RTS Brain', 'Show RTS Brain', cheatRtsBrain);
+    },
+  );
+  cheatMenuEl.appendChild(rtsBrainBtn);
+
+  // Option: Game speed
+  const speedCycle = [1, 2, 4, 8, 16];
+  const speedBtn = makeBtn(
+    cheatGameSpeed === 1 ? 'Game Speed: 1x (Normal)' : `Game Speed: ${cheatGameSpeed}x`,
+    () => {
+      const idx = speedCycle.indexOf(cheatGameSpeed);
+      cheatGameSpeed = speedCycle[(idx + 1) % speedCycle.length];
+      if (connection) connection.send({ type: 'cheat_game_speed', speed: cheatGameSpeed } as any);
+      speedBtn.textContent = cheatGameSpeed === 1 ? 'Game Speed: 1x (Normal)' : `Game Speed: ${cheatGameSpeed}x`;
+    },
+  );
+  cheatMenuEl.appendChild(speedBtn);
+
   // Option: Spawn Helicopter
   cheatMenuEl.appendChild(makeBtn('Spawn Helicopter', () => {
-    if (connection) {
-      connection.send({ type: 'cheat_spawn_heli' } as any);
-    }
-    toggleCheatMenu();
+    if (connection) connection.send({ type: 'cheat_spawn_heli' } as any);
   }));
 
   // Close hint
@@ -1119,7 +1513,185 @@ function toggleCheatMenu(): void {
   setTimeout(() => document.addEventListener('click', closeOnClick), 50);
 }
 
+// ===================== Controller Config UI =====================
+
+let controllerConfigEl: HTMLDivElement | null = null;
+let controllerConfigRAF: number | null = null;
+
+function toggleControllerConfig(): void {
+  if (controllerConfigEl) {
+    if (controllerConfigRAF !== null) cancelAnimationFrame(controllerConfigRAF);
+    controllerConfigRAF = null;
+    controllerConfigEl.remove();
+    controllerConfigEl = null;
+    return;
+  }
+
+  controllerConfigEl = document.createElement('div');
+  controllerConfigEl.style.cssText = `
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+    background:rgba(10,10,20,0.95); border:2px solid #0af; border-radius:12px;
+    padding:24px 32px; z-index:1100; font-family:system-ui,sans-serif;
+    min-width:420px; max-height:80vh; overflow-y:auto; color:#fff;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'Controller Config';
+  title.style.cssText = 'color:#0af;font-size:20px;font-weight:bold;margin-bottom:16px;text-align:center;';
+  controllerConfigEl.appendChild(title);
+
+  // Live gamepad status
+  const statusDiv = document.createElement('div');
+  statusDiv.style.cssText = 'margin-bottom:16px;font-size:13px;color:#888;';
+  controllerConfigEl.appendChild(statusDiv);
+
+  // Live button/axis display
+  const liveDiv = document.createElement('div');
+  liveDiv.style.cssText = 'margin-bottom:16px;font-size:12px;font-family:monospace;background:rgba(0,0,0,0.4);padding:10px;border-radius:6px;';
+  controllerConfigEl.appendChild(liveDiv);
+
+  // Action mapping rows
+  const actions: { key: keyof GamepadButtonMap; label: string }[] = [
+    { key: 'fire', label: 'Fire (RT/R2)' },
+    { key: 'altFire', label: 'Scope (LT/L2)' },
+    { key: 'jump', label: 'Jump (A/Cross)' },
+    { key: 'interact', label: 'Interact (Y/Triangle)' },
+    { key: 'swap', label: 'Weapon Swap (X/Square)' },
+    { key: 'heroAbility', label: 'Hero Ability (LB/L1)' },
+    { key: 'reload', label: 'Cycle Weapon (RB/R1)' },
+  ];
+
+  const currentMap = { ...vrManager.buttonMap };
+  const mapRows: HTMLDivElement[] = [];
+  let listeningAction: keyof GamepadButtonMap | null = null;
+  let listeningBtn: HTMLButtonElement | null = null;
+
+  const mapContainer = document.createElement('div');
+  for (const action of actions) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);';
+
+    const label = document.createElement('span');
+    label.textContent = action.label;
+    label.style.cssText = 'color:#ccc;font-size:14px;';
+    row.appendChild(label);
+
+    const btn = document.createElement('button');
+    btn.textContent = `Button ${currentMap[action.key]}`;
+    btn.style.cssText = `
+      padding:6px 16px;background:rgba(255,255,255,0.1);color:#fff;
+      border:1px solid #555;border-radius:4px;cursor:pointer;font-size:13px;
+      font-family:monospace;min-width:100px;
+    `;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Start listening for a button press
+      if (listeningBtn) {
+        listeningBtn.textContent = `Button ${currentMap[listeningAction!]}`;
+        listeningBtn.style.borderColor = '#555';
+      }
+      listeningAction = action.key;
+      listeningBtn = btn;
+      btn.textContent = 'Press...';
+      btn.style.borderColor = '#0f0';
+    });
+    row.appendChild(btn);
+    mapContainer.appendChild(row);
+    mapRows.push(row);
+  }
+  controllerConfigEl.appendChild(mapContainer);
+
+  // Save / Reset / Close buttons
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:10px;justify-content:center;margin-top:16px;';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save';
+  saveBtn.style.cssText = 'padding:8px 24px;background:rgba(0,255,0,0.15);color:#0f0;border:1px solid #0f0;border-radius:6px;cursor:pointer;font-size:14px;';
+  saveBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    Object.assign(vrManager.buttonMap, currentMap);
+    saveButtonMap(currentMap);
+    toggleControllerConfig();
+  });
+
+  const resetBtn = document.createElement('button');
+  resetBtn.textContent = 'Reset Defaults';
+  resetBtn.style.cssText = 'padding:8px 24px;background:rgba(255,165,0,0.15);color:#fa0;border:1px solid #fa0;border-radius:6px;cursor:pointer;font-size:14px;';
+  resetBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const defaults: GamepadButtonMap = { fire:7, altFire:6, jump:0, interact:3, swap:2, heroAbility:4, reload:5 };
+    Object.assign(currentMap, defaults);
+    // Update button labels
+    const btns = mapContainer.querySelectorAll('button');
+    actions.forEach((a, i) => { btns[i].textContent = `Button ${currentMap[a.key]}`; });
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.style.cssText = 'padding:8px 24px;background:rgba(255,255,255,0.1);color:#aaa;border:1px solid #555;border-radius:6px;cursor:pointer;font-size:14px;';
+  closeBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleControllerConfig(); });
+
+  btnRow.appendChild(saveBtn);
+  btnRow.appendChild(resetBtn);
+  btnRow.appendChild(closeBtn);
+  controllerConfigEl.appendChild(btnRow);
+
+  document.body.appendChild(controllerConfigEl);
+
+  // Live update loop — show raw gamepad data and detect button presses for remapping
+  function updateConfigUI(): void {
+    if (!controllerConfigEl) return;
+    const gp = vrManager.getRawGamepad();
+    if (!gp) {
+      statusDiv.textContent = 'No controller detected. Connect a Bluetooth/USB controller.';
+      liveDiv.textContent = '';
+    } else {
+      statusDiv.textContent = `${gp.id} (${gp.buttons.length} buttons, ${gp.axes.length} axes)`;
+
+      // Show live axes
+      let html = '<div style="color:#0af;margin-bottom:4px;">Axes:</div>';
+      for (let i = 0; i < gp.axes.length; i++) {
+        const v = gp.axes[i];
+        const bar = Math.abs(v) > 0.1 ? ' <span style="color:#0f0;">◄►</span>' : '';
+        html += `  [${i}] ${v.toFixed(2)}${bar}\n`;
+      }
+      html += '<div style="color:#fa0;margin-top:8px;margin-bottom:4px;">Buttons:</div>';
+      for (let i = 0; i < gp.buttons.length; i++) {
+        const b = gp.buttons[i];
+        const pressed = b.pressed ? ' <span style="color:#0f0;font-weight:bold;">PRESSED</span>' : '';
+        const val = b.value > 0.01 ? ` (${b.value.toFixed(2)})` : '';
+        html += `  [${i}]${val}${pressed}\n`;
+      }
+      liveDiv.innerHTML = `<pre style="margin:0;white-space:pre-wrap;">${html}</pre>`;
+
+      // Detect button press for remapping
+      if (listeningAction) {
+        for (let i = 0; i < gp.buttons.length; i++) {
+          if (gp.buttons[i].pressed) {
+            currentMap[listeningAction] = i;
+            if (listeningBtn) {
+              listeningBtn.textContent = `Button ${i}`;
+              listeningBtn.style.borderColor = '#555';
+            }
+            listeningAction = null;
+            listeningBtn = null;
+            break;
+          }
+        }
+      }
+    }
+    controllerConfigRAF = requestAnimationFrame(updateConfigUI);
+  }
+  controllerConfigRAF = requestAnimationFrame(updateConfigUI);
+}
+
 document.addEventListener('keydown', (e) => {
+  // Don't trigger dev tools when typing in an input field
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+  // F8 to open controller config
+  if (e.code === 'F8') { toggleControllerConfig(); return; }
   if (e.code === 'KeyO' && (rtsController || fpsController)) {
     if (playerCount <= 1) {
       // Solo: single press opens menu
@@ -1149,20 +1721,23 @@ document.getElementById('btn-play-again')!.addEventListener('click', () => {
 let previewScene: SceneManager | null = null;
 const previewCamera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.5, 500);
 let previewChangeTimer = 0;
+let previewMapId: MapId = (['meadow', 'frostpeak', 'blood_canyon', 'ironhold'] as MapId[])[Math.floor(Math.random() * 4)];
+let previewMapConfig: MapConfig = getMapConfig(previewMapId);
 
-// Camera keyframes: each is a distinct viewpoint
+// Camera keyframes: each is a distinct viewpoint, scaled to map size
 interface CamKeyframe { x: number; y: number; z: number; lookX: number; lookZ: number }
 function randomKeyframe(): CamKeyframe {
   const angle = Math.random() * Math.PI * 2;
-  const radius = 50 + Math.random() * 60;
-  const height = 20 + Math.random() * 40;
-  const lookOffset = (Math.random() - 0.5) * 30;
+  const mapScale = Math.max(previewMapConfig.width, previewMapConfig.depth) / 240; // normalize to meadow size
+  const radius = (50 + Math.random() * 60) * mapScale;
+  const height = (20 + Math.random() * 40) * mapScale;
+  const lookOffset = (Math.random() - 0.5) * 30 * mapScale;
   return {
     x: Math.cos(angle) * radius,
     y: height,
     z: Math.sin(angle) * radius,
     lookX: lookOffset,
-    lookZ: (Math.random() - 0.5) * 30,
+    lookZ: (Math.random() - 0.5) * 30 * mapScale,
   };
 }
 
@@ -1171,9 +1746,25 @@ let nextKeyframe: CamKeyframe = randomKeyframe();
 let keyframeT = 0; // 0–1 interpolation between keyframes
 const KEYFRAME_DURATION = 10; // seconds per transition (slow cinematic pace)
 
-function initPreviewScene(): void {
-  if (previewScene) return;
-  previewScene = new SceneManager(canvas);
+function initPreviewScene(mapConfig?: MapConfig): void {
+  // Destroy old scene if switching maps
+  if (previewScene) {
+    previewScene.destroy();
+    previewScene = null;
+  }
+  previewScene = new SceneManager(canvas, false, mapConfig ?? previewMapConfig, sharedRenderer);
+}
+
+function switchPreviewMap(mapId: MapId): void {
+  if (mapId === previewMapId && previewScene) return;
+  previewMapId = mapId;
+  previewMapConfig = getMapConfig(mapId);
+  initPreviewScene(previewMapConfig);
+  // Reset camera flyby with keyframes scaled to the new map
+  prevKeyframe = randomKeyframe();
+  nextKeyframe = randomKeyframe();
+  previewChangeTimer = 0;
+  keyframeT = 0;
 }
 
 function updatePreview(dt: number): void {
@@ -1205,7 +1796,7 @@ function updatePreview(dt: number): void {
   previewScene.renderWith(previewCamera);
 }
 
-// Initialize preview immediately
+// Initialize preview with a random map
 initPreviewScene();
 
 // ===================== End-Game Awards =====================
@@ -1296,17 +1887,23 @@ function showEndGameAwards(stats: import('@dyarchy/shared').PlayerGameStats[]): 
 }
 
 // ===================== Game Loop =====================
+// Uses renderer.setAnimationLoop for WebXR compatibility.
+// During an XR session, Three.js drives frames via XRSession.requestAnimationFrame.
+// Outside XR, it falls back to window.requestAnimationFrame.
 
 let lastTime = performance.now();
 
-function loop(now: number): void {
+function loop(now: number, _xrFrame?: unknown): void {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
+
+  const inVR = vrManager.isPresenting;
 
   if (rtsController) {
     rtsController.isFPSMode = activeRole === 'fps';
     rtsController.activeCamera = activeRole === 'fps' ? sceneManager.camera : rtsController.getCamera();
     rtsController.fpsPlayerEntityId = snapshotRenderer?.localFPSEntityId ?? null;
+    rtsController.localLayerId = snapshotRenderer?.localLayerId ?? 0;
     rtsController.tickVisuals(dt);
 
     if (snapshotRenderer) {
@@ -1335,13 +1932,65 @@ function loop(now: number): void {
   if (activeRole === 'fps') {
     // Sync wave timer to FPS HUD
     if (rtsController) fpsController.waveTimer = rtsController.getWaveTimer();
-    fpsController.update(dt);
-    sceneManager.renderWith(sceneManager.camera);
-    fpsController.renderWeaponView(sceneManager.renderer);
-    overlay.style.display = fpsController.isPointerLocked() ? 'none' : 'flex';
-    // Hide crosshair for sniper rifle (no hip-fire crosshair — must use scope)
-    const activeWpn = fpsController.getActiveWeapon();
-    crosshair.style.display = (activeWpn.id === 'sniper_rifle' && fpsController.isPointerLocked()) ? 'none' : crosshair.style.display;
+
+    // ---- VR path ----
+    if (inVR) {
+      // Feed gamepad input to FPS controller
+      const gpInput = vrManager.getGamepadInput();
+      fpsController.vrGamepadInput = gpInput;
+
+      // Gamepad: right stick horizontal → smooth yaw turn, vertical → aim pitch
+      if (gpInput) {
+        if (Math.abs(gpInput.lookX) > 0.1) {
+          vrManager.addRigYaw(-gpInput.lookX * dt * 2.5);
+        }
+        if (Math.abs(gpInput.lookY) > 0.1) {
+          vrManager.setAimPitch(vrManager.aimPitch - gpInput.lookY * dt * 2.5);
+        }
+      }
+      // Sync aim pitch to FPS controller for shooting calculations
+      fpsController.vrAimPitch = vrManager.aimPitch;
+
+      fpsController.update(dt);
+
+      // Sync VR weapon model when weapon changes
+      const wpn = fpsController.getActiveWeapon();
+      if (wpn.id !== vrWeaponId) {
+        vrWeaponId = wpn.id;
+        vrManager.setWeaponModel(createWeaponModel(wpn));
+      }
+      vrManager.setWeaponRecoil(fpsController.isDead ? 0 : 0);
+
+      // Update 3D HUD
+      const maxCd = 1 / wpn.fireRate;
+      const cdPct = Math.min(1, (fpsController as any).weaponCooldowns?.get?.(wpn.id) ?? 0) / maxCd;
+      vrManager.updateHUD(
+        fpsController.hp,
+        fpsController.maxHp,
+        wpn.name,
+        cdPct,
+        fpsController.isDead,
+      );
+
+      // Render (Three.js handles stereo automatically during XR session)
+      sceneManager.render();
+      // No weapon overlay — weapon is a child of the camera via VR mount
+
+      // Hide DOM overlays in VR (not visible in headset anyway)
+      overlay.style.display = 'none';
+      crosshair.style.display = 'none';
+    } else {
+      // ---- Standard flat-screen path ----
+      // Poll gamepad for controller support outside VR
+      fpsController.vrGamepadInput = vrManager.getGamepadInput();
+      fpsController.update(dt);
+      sceneManager.renderWith(sceneManager.camera);
+      fpsController.renderWeaponView(sceneManager.renderer);
+      overlay.style.display = fpsController.isPointerLocked() ? 'none' : 'flex';
+      // Hide crosshair for sniper rifle (no hip-fire crosshair — must use scope)
+      const activeWpn = fpsController.getActiveWeapon();
+      crosshair.style.display = (activeWpn.id === 'sniper_rifle' && fpsController.isPointerLocked()) ? 'none' : crosshair.style.display;
+    }
   } else if (activeRole === 'rts') {
     rtsController.updateCamera(dt);
     sceneManager.renderWith(rtsController.getCamera());
@@ -1356,8 +2005,6 @@ function loop(now: number): void {
   if (lobbyScreen.style.display === 'flex' && !activeRole) {
     updatePreview(dt);
   }
-
-  requestAnimationFrame(loop);
 }
 
-requestAnimationFrame(loop);
+sharedRenderer.setAnimationLoop(loop);

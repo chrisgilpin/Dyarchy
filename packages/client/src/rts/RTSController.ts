@@ -4,6 +4,7 @@ import { Selection } from './Selection.js';
 import { BuildPanel, type BuildingChoice, BUILDING_COSTS } from './BuildPanel.js';
 import { InfoPanel } from './InfoPanel.js';
 import { FogOfWar } from './FogOfWar.js';
+import { Minimap } from './Minimap.js';
 import { SoundManager } from '../audio/SoundManager.js';
 // getTerrainHeight accessed via this.sceneManager.terrainHeight
 import type { SceneManager, SceneEntity } from '../renderer/SceneManager.js';
@@ -43,6 +44,7 @@ const BUILDING_SIZES: Record<BuildingChoice, { w: number; h: number; d: number }
   sniper_nest: { w: 3, h: 10, d: 3 },
   garage: { w: 7, h: 5, d: 6 },
   main_base: { w: 8, h: 8, d: 8 },
+  hero_academy: { w: 7, h: 7, d: 7 },
 };
 
 const BASE_UPGRADE_COST = 1000;
@@ -56,6 +58,7 @@ const BUILDING_LABELS: Record<BuildingChoice, string> = {
   sniper_nest: 'Sniper Nest',
   garage: 'Garage',
   main_base: 'HQ',
+  hero_academy: 'Hero Academy',
 };
 
 interface ConstructingBuilding {
@@ -168,9 +171,15 @@ export class RTSController {
 
   // Control groups (Ctrl+1-9 to bind, 1-9 to recall)
   private controlGroups = new Map<number, string[]>();
+  private lastGroupRecallNum = -1;
+  private lastGroupRecallTime = 0;
+  private groupBarEl: HTMLDivElement;
 
   // Building damage flames
   private flameEffects = new Map<string, FlameEffect>();
+
+  // Minimap
+  private minimap: Minimap;
 
   // Track resource nodes for depletion warnings
   private knownResourceNodes = new Set<string>();
@@ -210,6 +219,8 @@ export class RTSController {
       onUpgradeBase: () => this.upgradeBase(),
       onUpgradeHarvest: () => this.upgradeHarvest(),
       onUpgradeArmory: () => this.upgradeArmory(),
+      onUpgradeArmoryLevel3: () => this.upgradeArmoryLevel3(),
+      onUpgradeUnits: (barracksId) => this.upgradeUnits(barracksId),
       onTrainWorker: () => this.trainWorker(),
       onCancelTraining: (baseId, index) => this.cancelTraining(baseId, index),
       onTrainFootSoldier: (barracksId) => this.trainFootSoldier(barracksId),
@@ -219,6 +230,23 @@ export class RTSController {
       onTrainArcher: (barracksId) => this.trainArcher(barracksId),
       onTrainJeep: (garageId) => this.trainJeep(garageId),
       onTrainHelicopter: (garageId) => this.trainHelicopter(garageId),
+      onUpgradeHeroHp: (buildingId) => this.onServerUpgrade?.(buildingId, 'hero_hp'),
+      onUpgradeHeroDmg: (buildingId) => this.onServerUpgrade?.(buildingId, 'hero_damage'),
+      onUpgradeHeroRegen: (buildingId) => this.onServerUpgrade?.(buildingId, 'hero_regen'),
+      onPlaceBuilding: (type) => this.startPlacement(type),
+      onCancelBuild: (buildingId) => {
+        this.onServerCommand?.({ command: 'cancel_build', unitIds: [], targetId: buildingId });
+      },
+      getShortestQueueId: (ids) => {
+        let bestId = ids[0];
+        let bestLen = Infinity;
+        for (const id of ids) {
+          const tq = this.trainingQueues.get(id);
+          const len = tq?.queue.length ?? 0;
+          if (len < bestLen) { bestLen = len; bestId = id; }
+        }
+        return bestId;
+      },
     });
 
     // HUD container
@@ -286,6 +314,23 @@ export class RTSController {
       transition: opacity 0.5s;
     `;
     document.body.appendChild(this.warningEl);
+
+    // Minimap
+    this.minimap = new Minimap(sceneManager.mapConfig.width, sceneManager.mapConfig.depth);
+    this.minimap.localTeamId = this.localTeamId;
+    this.minimap.onClickWorld = (x, z) => {
+      this.rtsCamera.centerX = x;
+      this.rtsCamera.centerZ = z;
+    };
+
+    // Control group bar
+    this.groupBarEl = document.createElement('div');
+    this.groupBarEl.id = 'control-group-bar';
+    this.groupBarEl.style.cssText = `
+      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+      display: none; gap: 4px; z-index: 15; font-family: system-ui, sans-serif;
+    `;
+    document.body.appendChild(this.groupBarEl);
   }
 
   enable(): void {
@@ -299,7 +344,11 @@ export class RTSController {
     this.buildPanel.setCrystals(this.crystals);
     this.buildPanel.hide();
     this.hudContainer.style.display = 'flex';
+    this.groupBarEl.style.display = 'flex';
+    this.minimap.localTeamId = this.localTeamId;
+    this.minimap.show();
     this.updateHud();
+    this.updateGroupBar();
 
     this.selection.setSelectables(this.sceneManager.entities);
 
@@ -316,6 +365,8 @@ export class RTSController {
     this.infoPanel.hide();
     this.cancelPlacement();
     this.hudContainer.style.display = 'none';
+    this.groupBarEl.style.display = 'none';
+    this.minimap.hide();
     document.removeEventListener('mousemove', this.onMouseMove);
     document.removeEventListener('click', this.onClickPlace);
     document.removeEventListener('contextmenu', this.onRightClick);
@@ -347,6 +398,8 @@ export class RTSController {
     this.fog.destroy();
     this.warningEl.remove();
     this.idleWorkerHud.remove();
+    this.groupBarEl.remove();
+    this.minimap.destroy();
   }
 
   getWaveTimer(): number {
@@ -357,8 +410,12 @@ export class RTSController {
   activeCamera: THREE.Camera | null = null;
   /** FPS player entity ID — health bar hidden in FPS mode */
   fpsPlayerEntityId: string | null = null;
+  /** The layer the local player is on (0 = surface, >0 = underground) */
+  localLayerId = 0;
   /** Whether the player is currently in FPS mode */
   isFPSMode = false;
+  /** Whether the game has ended (winner declared) */
+  gameOver = false;
 
   /** Visual-only tick for online mode — no game logic, just rendering helpers */
   tickVisuals(dt: number): void {
@@ -370,11 +427,19 @@ export class RTSController {
     this.updateBuildingFlames(dt);
     this.updateRallyLines();
     this.updateBuildQueueLines();
+    this.updateMinimap();
     this.updateWarning(dt);
     this.selection.update(dt);
 
+    // Sync crystals to info panel every frame for dynamic button updates (#4)
+    this.infoPanel.crystals = this.crystals;
+
     // Real-time InfoPanel refresh for selected entity (HP, construction progress, training)
-    if (this.selection.selected.size === 1) {
+    if (this.selection.selected.size > 1) {
+      // Multi-selection: dynamically update group health bar (#6)
+      const items = this.selection.getSelected();
+      this.infoPanel.refreshGroupStats(items);
+    } else if (this.selection.selected.size === 1) {
       const sel = this.selection.getSelected()[0];
       if (sel) {
         // Refresh HP bar and construction status every frame
@@ -497,8 +562,22 @@ export class RTSController {
           this.onBuildingComplete?.('armory_rockets');
           this.updateInfoPanel();
         }
+        // armoryLevel3 is now tracked as a team flag, synced below
       }
     }
+    // Sync hero academy upgrade levels
+    if (snapshot.heroHpLevel) this.infoPanel.heroHpLevel = snapshot.heroHpLevel[t] ?? 0;
+    if (snapshot.heroDmgLevel) this.infoPanel.heroDmgLevel = snapshot.heroDmgLevel[t] ?? 0;
+    if (snapshot.heroRegen?.[t]) this.infoPanel.heroRegenUnlocked = true;
+    if ((snapshot as any).unitUpgradeLevel) this.infoPanel.unitUpgradeLevel = (snapshot as any).unitUpgradeLevel[t] ?? 0;
+    if ((snapshot as any).armoryLevel3?.[t] && !this.infoPanel.armoryLevel3) {
+      this.infoPanel.armoryLevel3 = true;
+      this.updateInfoPanel();
+    }
+    // Check if expansion HQ requires main HQ upgrade
+    const myHQs = this.sceneManager.entities.filter(e => e.entityType === 'main_base' && e.teamId === this.localTeamId && e.hp > 0);
+    this.infoPanel.needsHQUpgradeForExpansion = myHQs.length > 0 && !this.infoPanel.baseUpgraded;
+
     this.infoPanel.barracksLevels = this.barracksLevels;
 
     // Detect depleted resource nodes — only warn if our workers were nearby
@@ -514,7 +593,7 @@ export class RTSController {
                        (e.position.z - nodeEntity.mesh.position.z) ** 2) < 5,
           );
           if (ourWorkerNearby) {
-            this.showWarning('A Crystal Field has been depleted!');
+            this.showWarning('A 💎 Field has been depleted!');
           }
         }
       }
@@ -536,8 +615,17 @@ export class RTSController {
             const dx = unit.position.x - building.position.x;
             const dz = unit.position.z - building.position.z;
             if (Math.sqrt(dx * dx + dz * dz) < 10) {
-              if (rally.targetEntityId && unit.entityType === 'worker') {
-                this.onServerCommand({ command: 'harvest', unitIds: [unit.id], targetId: rally.targetEntityId });
+              if (rally.targetEntityId) {
+                // Check what the target entity is
+                const targetEnt = snapshot.entities.find(e => e.id === rally.targetEntityId);
+                if (targetEnt?.entityType === 'resource_node' && unit.entityType === 'worker') {
+                  this.onServerCommand({ command: 'harvest', unitIds: [unit.id], targetId: rally.targetEntityId });
+                } else if (targetEnt && RTSController.MOBILE_TYPES.has(targetEnt.entityType as any)) {
+                  // Follow a unit
+                  this.onServerCommand({ command: 'follow', unitIds: [unit.id], targetId: rally.targetEntityId });
+                } else {
+                  this.onServerCommand({ command: 'move', unitIds: [unit.id], targetPos: { x: rally.position.x, y: 0, z: rally.position.z } });
+                }
               } else {
                 this.onServerCommand({ command: 'move', unitIds: [unit.id], targetPos: { x: rally.position.x, y: 0, z: rally.position.z } });
               }
@@ -548,6 +636,14 @@ export class RTSController {
       }
       this.knownUnitIds = new Set(friendlyUnits.map(u => u.id));
     }
+
+    // Prune dead entities from control groups
+    for (const [num, ids] of this.controlGroups) {
+      const alive = ids.filter(id => this.sceneManager.entities.some(e => e.id === id && e.hp > 0));
+      if (alive.length === 0) this.controlGroups.delete(num);
+      else this.controlGroups.set(num, alive);
+    }
+    this.updateGroupBar();
 
     // Sync construction progress bars for constructing entities
     this.syncConstructionBars();
@@ -707,6 +803,11 @@ export class RTSController {
     tex.needsUpdate = true;
   }
 
+  setCameraCenter(x: number, z: number): void {
+    this.rtsCamera.centerX = x;
+    this.rtsCamera.centerZ = z;
+  }
+
   updateCamera(dt: number): void {
     this.rtsCamera.update(dt);
   }
@@ -720,6 +821,80 @@ export class RTSController {
     return { x: this.rtsCamera.centerX, z: this.rtsCamera.centerZ };
   }
 
+  // ===================== Control Groups =====================
+
+  private recallGroup(num: number): void {
+    const group = this.controlGroups.get(num);
+    if (!group || group.length === 0) return;
+    this.selection.clearSelection();
+    for (const id of group) this.selection.selected.add(id);
+    this.selection.updateHighlights();
+    this.updateInfoPanel();
+    this.updateGroupBar();
+  }
+
+  private jumpCameraToGroup(num: number): void {
+    const group = this.controlGroups.get(num);
+    if (!group || group.length === 0) return;
+    let sumX = 0, sumZ = 0, count = 0;
+    for (const id of group) {
+      const ent = this.sceneManager.entities.find(e => e.id === id);
+      if (ent) { sumX += ent.mesh.position.x; sumZ += ent.mesh.position.z; count++; }
+    }
+    if (count > 0) this.setCameraCenter(sumX / count, sumZ / count);
+  }
+
+  private updateGroupBar(): void {
+    this.groupBarEl.innerHTML = '';
+    const selectedIds = this.selection.selected;
+    for (const [num, ids] of [...this.controlGroups.entries()].sort((a, b) => a[0] - b[0])) {
+      if (ids.length === 0) continue;
+
+      // Determine if group is buildings or units
+      const hasBuilding = ids.some(id => {
+        const ent = this.sceneManager.entities.find(e => e.id === id);
+        return ent && !RTSController.MOBILE_TYPES.has(ent.entityType as any);
+      });
+      const icon = hasBuilding ? '\u{1F3E0}' : '\u2694';
+
+      // Check if this group matches the current selection
+      const isActive = ids.length === selectedIds.size && ids.every(id => selectedIds.has(id));
+
+      const box = document.createElement('div');
+      box.style.cssText = `
+        width: 48px; height: 48px; background: rgba(0,0,0,0.7);
+        border: 1px solid ${isActive ? '#4af' : '#555'}; border-radius: 4px; cursor: pointer;
+        text-align: center; font-size: 11px; color: #ccc; position: relative;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        user-select: none;
+      `;
+
+      const numLabel = document.createElement('div');
+      numLabel.style.cssText = 'position: absolute; top: 2px; left: 4px; font-size: 10px; color: #888;';
+      numLabel.textContent = String(num);
+      box.appendChild(numLabel);
+
+      const content = document.createElement('div');
+      content.style.cssText = 'font-size: 13px; line-height: 1.2;';
+      content.textContent = `${icon} ${ids.length}`;
+      box.appendChild(content);
+
+      box.addEventListener('click', () => {
+        const now = performance.now();
+        if (this.lastGroupRecallNum === num && now - this.lastGroupRecallTime < 400) {
+          this.jumpCameraToGroup(num);
+          this.lastGroupRecallNum = -1;
+        } else {
+          this.recallGroup(num);
+          this.lastGroupRecallNum = num;
+          this.lastGroupRecallTime = now;
+        }
+      });
+
+      this.groupBarEl.appendChild(box);
+    }
+  }
+
   // ===================== Info Panel =====================
 
   private updateInfoPanel(): void {
@@ -729,16 +904,12 @@ export class RTSController {
     this.infoPanel.crystals = this.crystals;
     const items = this.selection.getSelected();
 
-    // Toggle build panel: only show when a friendly worker is selected
+    // Hide build panel when no worker is selected
     const hasWorkerSelected = items.some(
       s => s.entityType === 'worker' && s.teamId === this.localTeamId,
     );
-    if (hasWorkerSelected) {
-      this.buildPanel.setCrystals(this.crystals);
-      this.buildPanel.show();
-    } else {
+    if (!hasWorkerSelected) {
       this.buildPanel.hide();
-      // If we were placing a building and deselected the worker, cancel
       if (this.activeBuildType) this.cancelPlacement();
     }
 
@@ -793,6 +964,30 @@ export class RTSController {
       }
     }
     this.infoPanel.show(items);
+  }
+
+  private updateMinimap(): void {
+    if (this.isFPSMode) return; // minimap only in RTS mode
+    const cam = this.rtsCamera.camera;
+    const aspect = window.innerWidth / window.innerHeight;
+    const zoom = (cam.right - cam.left) / 2 / aspect; // recover zoom from projection
+    // Ortho camera viewport in world units
+    const viewHalfW = zoom * aspect;
+    // The camera is pitched, so the ground footprint depth is stretched
+    // For top-down (90°) it equals zoom; for lower angles it's larger.
+    // Approximate: the viewport center-to-edge on Z ≈ zoom / sin(pitch)
+    // But since we use lookAt, the vertical extent maps to Z via the pitch angle.
+    // Simpler: just use zoom as the half-depth (good enough for minimap rectangle)
+    const viewHalfH = zoom;
+    this.minimap.update(
+      this.sceneManager.entities,
+      this.rtsCamera.centerX,
+      this.rtsCamera.centerZ,
+      viewHalfW,
+      viewHalfH,
+      (x, z) => this.fog.isVisible(x, z),
+      (x, z) => this.fog.isExplored(x, z),
+    );
   }
 
   private updateIdleWorkerIndicator(): void {
@@ -936,17 +1131,13 @@ export class RTSController {
   }
 
   private upgradeArmory(): void {
-    if (this.crystals < 500) {
-      this.showWarning('Not enough crystals (need 500)');
-      return;
-    }
     const armory = this.sceneManager.entities.find(e => e.entityType === 'armory' && e.teamId === this.localTeamId);
     if (!armory) return;
 
     // If already level 2, this is the rocket cooldown upgrade
     if (this.infoPanel.armoryLevel2) {
       if (this.infoPanel.armoryRocketUpgrade) return;
-      if (this.crystals < 400) { this.showWarning('Not enough crystals (need 400)'); return; }
+      if (this.crystals < 400) { this.showWarning('Not enough 💎 (need 400)'); return; }
 
       if (this.onServerUpgrade) {
         this.onServerUpgrade(armory.id, 'armory_rockets');
@@ -958,6 +1149,7 @@ export class RTSController {
       return;
     }
 
+    if (this.crystals < 500) { this.showWarning('Not enough 💎 (need 500)'); return; }
     if (this.onServerUpgrade) {
       this.onServerUpgrade(armory.id, 'armory_level2');
       let tq = this.trainingQueues.get(armory.id);
@@ -970,6 +1162,33 @@ export class RTSController {
     }
   }
 
+  private upgradeArmoryLevel3(): void {
+    if (this.crystals < 600) { this.showWarning('Not enough 💎 (need 600)'); return; }
+    const armory = this.sceneManager.entities.find(e => e.entityType === 'armory' && e.teamId === this.localTeamId);
+    if (!armory) return;
+    if (this.onServerUpgrade) {
+      this.onServerUpgrade(armory.id, 'armory_level3');
+      let tq = this.trainingQueues.get(armory.id);
+      if (!tq) { tq = { baseEntity: armory, queue: [], barBg: null, barFill: null }; this.trainingQueues.set(armory.id, tq); }
+      tq.queue.push({ elapsed: 0, duration: 15, unitType: 'upgrade_armory' });
+      this.updateInfoPanel();
+    }
+  }
+
+  private upgradeUnits(barracksId: string): void {
+    const uLvl = this.infoPanel.unitUpgradeLevel;
+    const cost = uLvl === 0 ? 250 : 750;
+    if (this.crystals < cost) { this.showWarning(`Not enough 💎 (need ${cost})`); return; }
+    if (this.onServerUpgrade) {
+      this.onServerUpgrade(barracksId, 'unit_upgrade');
+      let tq = this.trainingQueues.get(barracksId);
+      const barracks = this.sceneManager.entities.find(e => e.id === barracksId);
+      if (!tq && barracks) { tq = { baseEntity: barracks, queue: [], barBg: null, barFill: null }; this.trainingQueues.set(barracksId, tq); }
+      if (tq) tq.queue.push({ elapsed: 0, duration: 12, unitType: 'upgrade_barracks' });
+      this.updateInfoPanel();
+    }
+  }
+
   // ===================== Worker Training =====================
 
   private trainWorker(): void {
@@ -978,7 +1197,7 @@ export class RTSController {
       return;
     }
     if (this.crystals < WORKER_COST) {
-      this.showWarning(`Not enough crystals (need ${WORKER_COST})`);
+      this.showWarning(`Not enough 💎 (need ${WORKER_COST})`);
       return;
     }
 
@@ -1174,17 +1393,45 @@ export class RTSController {
         let isAttacking = false;
         const atkDetectRange = entity.entityType === 'archer' ? ARCHER_ATTACK_RANGE * ARCHER_ATTACK_RANGE : 9;
         if (!isMoving) {
-          for (const other of this.sceneManager.entities) {
-            if (other.teamId === entity.teamId || other.hp <= 0) continue;
-            const adx = entity.mesh.position.x - other.mesh.position.x;
-            const adz = entity.mesh.position.z - other.mesh.position.z;
-            if (adx * adx + adz * adz < atkDetectRange) {
-              isAttacking = true;
-              // Spawn arrow projectile for archers
-              if (entity.entityType === 'archer') {
-                this.trySpawnArrow(entity, other);
-              }
-              break;
+          // For archers: find the enemy that best matches the archer's facing direction
+          // (the server rotates archers toward their actual target)
+          let bestTarget: SceneEntity | null = null;
+          if (entity.entityType === 'archer') {
+            const facingX = Math.sin(entity.mesh.rotation.y);
+            const facingZ = Math.cos(entity.mesh.rotation.y);
+            let bestScore = -Infinity;
+            for (const other of this.sceneManager.entities) {
+              if (other.teamId === entity.teamId || other.hp <= 0) continue;
+              const adx = other.mesh.position.x - entity.mesh.position.x;
+              const adz = other.mesh.position.z - entity.mesh.position.z;
+              const d2 = adx * adx + adz * adz;
+              if (d2 >= atkDetectRange || d2 < 0.01) continue;
+              // Dot product with facing direction — higher = more aligned
+              const len = Math.sqrt(d2);
+              const dot = (adx / len) * facingX + (adz / len) * facingZ;
+              if (dot > bestScore) { bestScore = dot; bestTarget = other; }
+            }
+          } else {
+            // Melee units: closest enemy in range
+            let bestDist = atkDetectRange;
+            for (const other of this.sceneManager.entities) {
+              if (other.teamId === entity.teamId || other.hp <= 0) continue;
+              const adx = entity.mesh.position.x - other.mesh.position.x;
+              const adz = entity.mesh.position.z - other.mesh.position.z;
+              const d2 = adx * adx + adz * adz;
+              if (d2 < bestDist) { bestDist = d2; bestTarget = other; }
+            }
+          }
+          if (bestTarget) {
+            isAttacking = true;
+            // Face toward the attack target (archers and melee)
+            const tdx = bestTarget.mesh.position.x - entity.mesh.position.x;
+            const tdz = bestTarget.mesh.position.z - entity.mesh.position.z;
+            if (tdx * tdx + tdz * tdz > 0.01) {
+              entity.mesh.rotation.y = Math.atan2(tdx, tdz);
+            }
+            if (entity.entityType === 'archer') {
+              this.trySpawnArrow(entity, bestTarget);
             }
           }
         }
@@ -1210,16 +1457,56 @@ export class RTSController {
   }
 
   private animateTowerTurret(entity: SceneEntity, dt: number): void {
-    // Find the turret group and muzzle flash inside the mesh hierarchy
-    const found: { turret: THREE.Object3D | null; flash: THREE.Object3D | null } = { turret: null, flash: null };
+    // Find the turret group, secondary barrel, and muzzle flash
+    const found: { turret: THREE.Object3D | null; flash: THREE.Object3D | null; secondary: THREE.Object3D | null } = {
+      turret: null, flash: null, secondary: null,
+    };
     entity.mesh.traverse((child) => {
       if (child.name === 'turret') found.turret = child;
       if (child.name === 'muzzle_flash') found.flash = child;
+      if (child.name === 'barrel_secondary') found.secondary = child;
     });
     if (!found.turret) return;
 
-    // Rotate turret to face target (rotation.y from server/offline = angle)
+    // Primary gun: rotate whole turret to face primary target
     found.turret.rotation.y = entity.rotation.y;
+
+    // Secondary gun: find a different target and aim independently
+    if (found.secondary && this.towerDualGuns.has(entity.id)) {
+      const primaryAngle = entity.rotation.y;
+      const towerPos = entity.mesh.position;
+      const TOWER_RANGE_SQ = 25 * 25; // base range squared
+
+      // Find nearest enemy that isn't the primary target
+      let secondAngle: number | null = null;
+      let bestDist = Infinity;
+      for (const ent of this.sceneManager.entities) {
+        if (ent.teamId === entity.teamId || ent.hp <= 0) continue;
+        if (ent.entityType === 'resource_node') continue;
+        const dx = ent.mesh.position.x - towerPos.x;
+        const dz = ent.mesh.position.z - towerPos.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > TOWER_RANGE_SQ) continue;
+        const angle = Math.atan2(dx, dz);
+        // Skip if this is the same target as the primary (within 0.1 rad)
+        let diff = angle - primaryAngle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        if (Math.abs(diff) < 0.1) continue;
+        if (d2 < bestDist) {
+          bestDist = d2;
+          secondAngle = angle;
+        }
+      }
+
+      if (secondAngle !== null) {
+        // Rotate secondary barrel relative to turret group (which already rotated to primaryAngle)
+        found.secondary.rotation.y = secondAngle - primaryAngle;
+      } else {
+        // No second target — counter-rotate to stay stationary in world space
+        found.secondary.rotation.y = -primaryAngle;
+      }
+    }
 
     // Muzzle flash: rotation.z = 1 means "just fired"
     let timer = this.towerFlashTimers.get(entity.id) ?? 0;
@@ -1230,7 +1517,7 @@ export class RTSController {
 
       // Spawn debris at estimated impact point
       const angle = entity.rotation.y;
-      const range = 15; // approximate target distance
+      const range = 15;
       const isMiss = entity.rotation.x > 0.5;
       const missOffset = isMiss ? (Math.random() - 0.5) * 6 : 0;
       const impactX = entity.mesh.position.x + Math.sin(angle) * range + missOffset;
@@ -1612,7 +1899,7 @@ export class RTSController {
     }
 
     this.fog.show();
-    this.fog.update(this.sceneManager.entities);
+    this.fog.update(this.sceneManager.entities, this.localLayerId);
 
     // Hide/show entities based on fog visibility
     // Scale mobile units 3x in RTS view for visibility
@@ -1732,7 +2019,7 @@ export class RTSController {
     const barracks = this.sceneManager.entities.find(e => e.id === barracksId);
     if (!barracks || barracks.entityType !== 'barracks' || barracks.teamId !== this.localTeamId) return;
     // Foot soldiers available at barracks tier 1 (no level requirement)
-    if (this.crystals < FOOT_SOLDIER_COST) { this.showWarning('Not enough crystals'); return; }
+    if (this.crystals < FOOT_SOLDIER_COST) { this.showWarning('Not enough 💎'); return; }
     if (this.supplyUsed >= this.supplyCap) { this.showWarning('Supply cap reached'); return; }
 
     if (this.onServerTrainUnit) {
@@ -1756,7 +2043,7 @@ export class RTSController {
     if (!barracks || barracks.entityType !== 'barracks' || barracks.teamId !== this.localTeamId) return;
     const level = this.barracksLevels.get(barracksId) ?? 1;
     if (level < 2) return;
-    if (this.crystals < ARCHER_COST) { this.showWarning('Not enough crystals'); return; }
+    if (this.crystals < ARCHER_COST) { this.showWarning('Not enough 💎'); return; }
     if (this.supplyUsed >= this.supplyCap) { this.showWarning('Supply cap reached'); return; }
 
     if (this.onServerTrainUnit) {
@@ -1774,7 +2061,7 @@ export class RTSController {
   private trainJeep(garageId: string): void {
     const garage = this.sceneManager.entities.find(e => e.id === garageId);
     if (!garage || garage.entityType !== 'garage' || garage.teamId !== this.localTeamId) return;
-    if (this.crystals < 500) { this.showWarning('Not enough crystals'); return; }
+    if (this.crystals < 500) { this.showWarning('Not enough 💎'); return; }
     if (this.supplyUsed + 3 > this.supplyCap) { this.showWarning('Not enough supply'); return; }
 
     if (this.onServerTrainUnit) {
@@ -1793,7 +2080,7 @@ export class RTSController {
   private trainHelicopter(garageId: string): void {
     const garage = this.sceneManager.entities.find(e => e.id === garageId);
     if (!garage || garage.entityType !== 'garage' || garage.teamId !== this.localTeamId) return;
-    if (this.crystals < 400) { this.showWarning('Not enough crystals'); return; }
+    if (this.crystals < 400) { this.showWarning('Not enough 💎'); return; }
     if (this.supplyUsed + 3 > this.supplyCap) { this.showWarning('Not enough supply'); return; }
 
     if (this.onServerTrainUnit) {
@@ -1813,7 +2100,7 @@ export class RTSController {
     const barracks = this.sceneManager.entities.find(e => e.id === barracksId);
     if (!barracks || barracks.entityType !== 'barracks') return;
     if ((this.barracksLevels.get(barracksId) ?? 1) >= 2) return;
-    if (this.crystals < BARRACKS_UPGRADE_COST) { this.showWarning('Not enough crystals (need 500)'); return; }
+    if (this.crystals < BARRACKS_UPGRADE_COST) { this.showWarning('Not enough 💎 (need 500)'); return; }
 
     if (this.onServerUpgrade) {
       this.onServerUpgrade(barracksId, 'barracks_level2');
@@ -1834,7 +2121,7 @@ export class RTSController {
     const currentLevel = this.towerLevels.get(towerId) ?? 1;
     if (currentLevel >= 3) return;
     const cost = currentLevel >= 2 ? 500 : 300;
-    if (this.crystals < cost) { this.showWarning(`Not enough crystals (need ${cost})`); return; }
+    if (this.crystals < cost) { this.showWarning(`Not enough 💎 (need ${cost})`); return; }
 
     if (this.onServerUpgrade) {
       this.onServerUpgrade(towerId, 'tower_upgrade');
@@ -1852,13 +2139,48 @@ export class RTSController {
     const tower = this.sceneManager.entities.find(e => e.id === towerId);
     if (!tower) return;
     if (this.towerDualGuns.has(towerId)) return;
-    if (this.crystals < 300) { this.showWarning('Not enough crystals (need 300)'); return; }
+    if (this.crystals < 300) { this.showWarning('Not enough 💎 (need 300)'); return; }
 
     if (this.onServerUpgrade) {
       this.onServerUpgrade(towerId, 'tower_dual_gun');
       this.towerDualGuns.add(towerId);
+      // Add a second gun barrel to the mesh
+      this.addDualGunBarrel(tower);
       this.updateInfoPanel();
     }
+  }
+
+  private addDualGunBarrel(entity: SceneEntity): void {
+    let turretGroup: THREE.Object3D | null = null;
+    entity.mesh.traverse((child) => {
+      if (child.name === 'turret') turretGroup = child;
+    });
+    if (!turretGroup) return;
+    // Don't add if already has a second barrel
+    if ((turretGroup as THREE.Object3D).getObjectByName('barrel_secondary')) return;
+
+    const barrelGroup = new THREE.Group();
+    barrelGroup.name = 'barrel_secondary';
+    barrelGroup.rotation.x = 0.2;
+    barrelGroup.position.y = 0.35; // offset above the primary barrel
+
+    const barrel = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.1, 0.1, 3.0, 6),
+      new THREE.MeshLambertMaterial({ color: 0x444444 }),
+    );
+    barrel.rotation.x = Math.PI / 2;
+    barrel.position.set(0, 0, 1.5);
+    barrelGroup.add(barrel);
+
+    const housing = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.18, 0.7, 6),
+      new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    );
+    housing.rotation.x = Math.PI / 2;
+    housing.position.set(0, 0, 0.35);
+    barrelGroup.add(housing);
+
+    (turretGroup as THREE.Object3D).add(barrelGroup);
   }
 
   // ===================== Ping Beacon (RTS → FPS communication) =====================
@@ -1938,12 +2260,35 @@ export class RTSController {
   private static readonly TOWER_RANGE_VALUE = 25;
   private rangeCircle: THREE.Mesh | null = null;
 
-  /** Update rally line visibility — only show when building is selected */
+  /** Update rally line visibility and position (track unit targets) */
   private updateRallyLines(): void {
     const selected = this.selection.getSelected();
     const selectedId = selected.length === 1 ? selected[0].id : null;
     for (const [id, line] of this.rallyLines) {
       line.visible = id === selectedId;
+
+      // Update line endpoint if the rally target is a moving entity
+      if (line.visible) {
+        const rally = this.rallyPoints.get(id);
+        if (rally?.targetEntityId) {
+          const targetEnt = this.sceneManager.entities.find(e => e.id === rally.targetEntityId);
+          if (targetEnt && targetEnt.hp > 0) {
+            rally.position.copy(targetEnt.mesh.position);
+            const positions = (line.geometry as THREE.BufferGeometry).getAttribute('position') as THREE.BufferAttribute;
+            positions.setXYZ(1, targetEnt.mesh.position.x,
+              this.sceneManager.terrainHeight(targetEnt.mesh.position.x, targetEnt.mesh.position.z) + 0.5,
+              targetEnt.mesh.position.z);
+            positions.needsUpdate = true;
+          } else {
+            // Target died — clear rally
+            this.rallyPoints.delete(id);
+            this.sceneManager.scene.remove(line);
+            line.geometry.dispose();
+            (line.material as THREE.Material).dispose();
+            this.rallyLines.delete(id);
+          }
+        }
+      }
     }
 
     // Show range circle for selected tower/turret or archer(s)
@@ -2134,13 +2479,16 @@ export class RTSController {
       ? selected[0] : null;
     if (selectedBuilding) {
       const isResource = clickedEntity?.entityType === 'resource_node';
-      const rallyPos = new THREE.Vector3(worldPos.x, 0, worldPos.z);
+      const isFriendlyUnit = clickedEntity && clickedEntity.teamId === this.localTeamId
+        && RTSController.MOBILE_TYPES.has(clickedEntity.entityType) && clickedEntity.hp > 0;
+      const rallyPos = clickedEntity ? clickedEntity.mesh.position.clone() : new THREE.Vector3(worldPos.x, 0, worldPos.z);
       this.rallyPoints.set(selectedBuilding.id, {
         position: rallyPos,
-        targetEntityId: isResource && clickedEntity ? clickedEntity.id : null,
+        targetEntityId: (isResource || isFriendlyUnit) && clickedEntity ? clickedEntity.id : null,
       });
       this.updateRallyLine(selectedBuilding.id, selectedBuilding.mesh.position, rallyPos);
-      this.selection.showActionMarker(rallyPos, isResource ? 'harvest' : 'move', clickedEntity?.entityType);
+      const marker = isResource ? 'harvest' : isFriendlyUnit ? 'move' : 'move';
+      this.selection.showActionMarker(rallyPos, marker, clickedEntity?.entityType);
       SoundManager.instance().unitCommand();
       return;
     }
@@ -2153,10 +2501,33 @@ export class RTSController {
     const isDamagedFriendly = clickedEntity && clickedEntity.teamId === this.localTeamId
       && clickedEntity.status === 'active' && clickedEntity.hp < clickedEntity.maxHp && clickedEntity.hp > 0
       && !RTSController.MOBILE_TYPES.has(clickedEntity.entityType) && clickedEntity.entityType !== 'resource_node';
+    // Follow: right-click on a friendly mobile unit that isn't one of the selected units
+    const isFriendlyMobile = clickedEntity && clickedEntity.teamId === this.localTeamId
+      && RTSController.MOBILE_TYPES.has(clickedEntity.entityType) && clickedEntity.hp > 0
+      && !selectedMobileIds.includes(clickedEntity.id);
 
     // Send all commands to server
     if (this.onServerCommand) {
-      if (selectedWorkerIds.length > 0 && isDamagedFriendly && clickedEntity) {
+      // Force attack mode: click a friendly unit to attack it
+      if (this.infoPanel.forceAttackMode && clickedEntity && clickedEntity.teamId === this.localTeamId
+          && clickedEntity.hp > 0 && this.infoPanel.forceAttackUnitIds.length > 0) {
+        this.onServerCommand({ command: 'force_attack', unitIds: this.infoPanel.forceAttackUnitIds, targetId: clickedEntity.id });
+        this.selection.showActionMarker(clickedEntity.mesh.position, 'attack', clickedEntity.entityType);
+        this.infoPanel.forceAttackMode = false;
+        this.infoPanel.forceAttackUnitIds = [];
+        this.updateInfoPanel();
+        return;
+      }
+      // Cancel force attack mode on any other click
+      if (this.infoPanel.forceAttackMode) {
+        this.infoPanel.forceAttackMode = false;
+        this.infoPanel.forceAttackUnitIds = [];
+      }
+      if (isFriendlyMobile && clickedEntity) {
+        // Follow a friendly unit
+        this.onServerCommand({ command: 'follow', unitIds: selectedMobileIds, targetId: clickedEntity.id });
+        this.selection.showActionMarker(clickedEntity.mesh.position, 'move', clickedEntity.entityType);
+      } else if (selectedWorkerIds.length > 0 && isDamagedFriendly && clickedEntity) {
         this.onServerCommand({ command: 'repair', unitIds: selectedWorkerIds, targetId: clickedEntity.id });
         this.selection.showActionMarker(clickedEntity.mesh.position, 'move', clickedEntity.entityType);
       } else if (selectedWorkerIds.length > 0 && isConstructing && clickedEntity) {
@@ -2185,61 +2556,44 @@ export class RTSController {
       return;
     }
 
+    // Escape with worker selected: cancel in-progress and queued buildings
+    if (e.code === 'Escape') {
+      const selected = this.selection.getSelected();
+      const workers = selected.filter(s => s.entityType === 'worker' && s.teamId === this.localTeamId);
+      if (workers.length > 0) {
+        for (const w of workers) {
+          // Cancel queued buildings for this worker (server handles refunds)
+          this.onServerCommand?.({ command: 'cancel_worker_builds', unitIds: [w.id], targetId: '' });
+        }
+        return;
+      }
+    }
+
+    // Route hotkeys through InfoPanel's sub-menu system
+    if (this.infoPanel.handleHotkey(e.code)) return;
+
     const selected = this.selection.getSelected();
-    if (selected.length === 1 && selected[0].entityType === 'main_base' && selected[0].teamId === this.localTeamId) {
-      if (e.code === 'KeyG') {
-        this.trainWorker();
-      } else if (e.code === 'KeyU') {
-        this.upgradeBase();
-      } else if (e.code === 'KeyH') {
-        this.upgradeHarvest();
-      } else if (e.code === 'KeyX') {
-        const tq = this.trainingQueues.get(selected[0].id);
-        if (tq && tq.queue.length > 0) {
-          this.cancelTraining(selected[0].id, tq.queue.length - 1);
-        }
-      }
-    }
 
-    if (selected.length === 1 && selected[0].entityType === 'barracks' && selected[0].teamId === this.localTeamId) {
-      if (e.code === 'KeyF') {
-        this.trainFootSoldier(selected[0].id);
-      } else if (e.code === 'KeyA') {
-        this.trainArcher(selected[0].id);
-      } else if (e.code === 'KeyU') {
-        this.upgradeBarracks(selected[0].id);
-      } else if (e.code === 'KeyX') {
-        const tq = this.trainingQueues.get(selected[0].id);
-        if (tq && tq.queue.length > 0) {
-          this.cancelTraining(selected[0].id, tq.queue.length - 1);
-        }
-      }
-    }
-
-    // Control groups: Ctrl+1-9 to assign, 1-9 to recall (only when no base selected)
+    // Control groups: Ctrl+1-9 to assign, 1-9 to recall
     const digit = e.code.match(/^Digit([1-9])$/);
     if (digit) {
       const num = parseInt(digit[1]);
       if (e.ctrlKey || e.metaKey) {
         // Assign current selection to group
         e.preventDefault();
-        const ids = this.selection.getSelected().map(s => s.id);
+        const ids = selected.map(s => s.id);
         if (ids.length > 0) this.controlGroups.set(num, ids);
-      } else if (!(selected.length === 1 && selected[0].entityType === 'main_base')) {
-        // Recall group (don't interfere with build hotkeys when worker selected)
-        const workerSelected = selected.some(s => s.entityType === 'worker');
-        if (!workerSelected) {
-          const group = this.controlGroups.get(num);
-          if (group) {
-            this.selection.clearSelection();
-            const alive = group.filter(id => this.sceneManager.entities.some(e => e.id === id));
-            this.controlGroups.set(num, alive);
-            for (const id of alive) {
-              this.selection.selected.add(id);
-            }
-            this.selection.updateHighlights();
-            this.updateInfoPanel();
-          }
+        this.updateGroupBar();
+      } else {
+        // Recall or double-tap camera jump
+        const now = performance.now();
+        if (this.lastGroupRecallNum === num && now - this.lastGroupRecallTime < 400) {
+          this.jumpCameraToGroup(num);
+          this.lastGroupRecallNum = -1;
+        } else {
+          this.recallGroup(num);
+          this.lastGroupRecallNum = num;
+          this.lastGroupRecallTime = now;
         }
       }
     }
@@ -2292,7 +2646,7 @@ export class RTSController {
   }
 
   private updateHud(): void {
-    this.crystalHud.textContent = `Crystals: ${this.crystals}`;
+    this.crystalHud.textContent = `💎 ${this.crystals}`;
     this.supplyHud.textContent = `Supply: ${this.supplyUsed} / ${this.supplyCap}`;
 
     const teamFighters = this.sceneManager.entities.filter(
@@ -2358,9 +2712,13 @@ export class RTSController {
       }
 
       if (e.shiftKey) {
-        // Shift held — stay in placement mode for build queuing
-        // Optimistically deduct crystals so the next placement check is correct
-        this.spendCrystals(cost);
+        // Shift held — stay in placement mode for build queuing (max 4)
+        const queue = this.workerBuildQueues.get(this.builderWorkerId ?? '');
+        if (queue && queue.length >= 4) {
+          this.cancelPlacement();
+        } else {
+          this.spendCrystals(cost);
+        }
       } else {
         this.cancelPlacement();
       }

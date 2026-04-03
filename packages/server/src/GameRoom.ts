@@ -1,7 +1,8 @@
 import type { WebSocket } from 'ws';
-import type { TeamId, Role, ClientMessage, ServerMessage, SnapshotMsg, FPSInputMsg, MapId, PlayerGameStats } from '@dyarchy/shared';
+import type { TeamId, Role, ClientMessage, ServerMessage, SnapshotMsg, FPSInputMsg, MapId, PlayerGameStats, AIDifficulty } from '@dyarchy/shared';
 import { TICK_RATE, TICK_INTERVAL_MS, HERO_ABILITY_MAX_CHARGE } from '@dyarchy/shared';
 import { GameState, type FPSPlayerEntity } from './GameState.js';
+import { AIPlayer } from './AIPlayer.js';
 
 interface Player {
   id: string;
@@ -29,6 +30,15 @@ export class GameRoom {
   private mapId: MapId = 'meadow';
   private pendingSwap: PendingSwap | null = null;
   private gameStats = new Map<string, PlayerGameStats>();
+  private aiPlayers: AIPlayer[] = [];
+  private cpuSlots: Record<string, AIDifficulty | null> = {
+    '1_fps': null, '1_rts': null, '2_fps': null, '2_rts': null,
+  };
+  private rtsBrainDebug = false;
+  private gameSpeed = 1;
+  /** Last snapshot entity state per player, for delta compression */
+  private lastSentEntities = new Map<string, Map<string, string>>(); // playerId -> (entityId -> JSON)
+  private deltaTickCounter = 0; // send full snapshot every N ticks
 
   /** Called when room status changes (for lobby broadcast). Set by index.ts. */
   onStatusChange: (() => void) | null = null;
@@ -163,6 +173,61 @@ export class GameRoom {
       return;
     }
 
+    // Configure CPU slot
+    if ((msg as any).type === 'configure_cpu') {
+      if (this.status !== 'waiting') return;
+      const slot = (msg as any).slot as string;
+      const difficulty = (msg as any).difficulty as AIDifficulty | null;
+      if (['1_fps', '1_rts', '2_fps', '2_rts'].includes(slot)) {
+        this.cpuSlots[slot] = difficulty;
+        this.broadcastRoomState();
+      }
+      return;
+    }
+
+    // Cheat: game speed multiplier
+    if ((msg as any).type === 'cheat_game_speed') {
+      this.gameSpeed = (msg as any).speed ?? 1;
+      return;
+    }
+
+    // Cheat: toggle RTS brain debug overlay
+    if ((msg as any).type === 'cheat_rts_brain') {
+      this.rtsBrainDebug = (msg as any).enabled ?? false;
+      return;
+    }
+
+    // Rocket fired: relay to all other players for visual effect
+    if ((msg as any).type === 'rocket_fired') {
+      const rocketMsg = JSON.stringify({
+        type: 'rocket_fired',
+        origin: (msg as any).origin,
+        direction: (msg as any).direction,
+        shooterId: player.fpsEntityId,
+      });
+      for (const p of this.players.values()) {
+        if (p.id === playerId) continue;
+        if (p.ws.readyState === p.ws.OPEN) p.ws.send(rocketMsg);
+      }
+      return;
+    }
+
+    // Helicopter impact debris: relay to all other players
+    if ((msg as any).type === 'heli_impact') {
+      const impactMsg = JSON.stringify({
+        type: 'heli_impact',
+        x: (msg as any).x,
+        y: (msg as any).y,
+        z: (msg as any).z,
+        kind: (msg as any).kind,
+      });
+      for (const p of this.players.values()) {
+        if (p.id === playerId) continue;
+        if (p.ws.readyState === p.ws.OPEN) p.ws.send(impactMsg);
+      }
+      return;
+    }
+
     // Chat: relay to team or all
     if ((msg as any).type === 'send_chat') {
       const text = ((msg as any).text as string || '').trim().slice(0, 200);
@@ -215,7 +280,7 @@ export class GameRoom {
       if (veh && veh.seat === 'driver') {
         const vi = msg as any;
         if (veh.jeep.entityType === 'helicopter') {
-          this.state.applyHelicopterInput(veh.jeep.id, vi.forward, vi.backward, vi.cameraYaw, vi.ascend ?? false, vi.descend ?? false, vi.dt);
+          this.state.applyHelicopterInput(veh.jeep.id, vi.forward, vi.backward, vi.cameraYaw, vi.ascend ?? false, vi.descend ?? false, vi.dt, vi.strafeLeft ?? false, vi.strafeRight ?? false);
         } else {
           this.state.applyVehicleInput(veh.jeep.id, vi.forward, vi.backward, vi.cameraYaw, vi.dt);
         }
@@ -238,11 +303,11 @@ export class GameRoom {
     if ((msg as any).type === 'select_hero' && this.state && player.fpsEntityId) {
       const fps = this.state.entities.get(player.fpsEntityId) as import('./GameState.js').FPSPlayerEntity | undefined;
       if (!fps || !fps.isDead) return; // can only select during respawn
-      // Check HQ level >= 2
-      const mainBase = [...this.state.entities.values()].find(
-        e => e.entityType === 'main_base' && e.teamId === player.team && e.hp > 0,
+      // Requires Hero Academy
+      const hasAcademy = [...this.state.entities.values()].some(
+        e => e.entityType === 'hero_academy' && e.teamId === player.team && e.hp > 0 && e.status === 'active',
       );
-      if (!mainBase || (mainBase.level ?? 1) < 2) return;
+      if (!hasAcademy) return;
       const heroType = (msg as any).heroType;
       if (heroType === 'tank' || heroType === 'healer' || heroType === 'mechanic') {
         fps.heroType = heroType;
@@ -280,10 +345,10 @@ export class GameRoom {
       if (!nest || nest.entityType !== 'sniper_nest') return;
 
       if (action === 'up') {
-        fpsEnt.position = { x: nest.position.x, y: 9.5 + 1.5, z: nest.position.z };
+        fpsEnt.position = { x: nest.position.x, y: nest.position.y + 9.5 + 1.5, z: nest.position.z };
         fpsEnt.velocity = { x: 0, y: 0, z: 0 };
       } else if (action === 'down') {
-        fpsEnt.position = { x: nest.position.x, y: 1.5, z: nest.position.z + 2.5 };
+        fpsEnt.position = { x: nest.position.x, y: nest.position.y + 1.5, z: nest.position.z + 2.5 };
         fpsEnt.velocity = { x: 0, y: 0, z: 0 };
       }
       return;
@@ -299,7 +364,7 @@ export class GameRoom {
 
       case 'select_map':
         if (this.status !== 'waiting') return;
-        if (msg.mapId === 'meadow' || msg.mapId === 'frostpeak') {
+        if (msg.mapId === 'meadow' || msg.mapId === 'frostpeak' || msg.mapId === 'blood_canyon' || msg.mapId === 'ironhold') {
           this.mapId = msg.mapId;
           // Reset ready state when map changes
           for (const p of this.players.values()) p.ready = false;
@@ -320,6 +385,9 @@ export class GameRoom {
         player.team = msg.team;
         player.role = msg.role;
         player.ready = false; // reset ready when changing
+        // Clear CPU slot when a human takes it
+        const cpuKey = `${msg.team}_${msg.role}`;
+        if (this.cpuSlots[cpuKey]) this.cpuSlots[cpuKey] = null;
         if (this.status === 'waiting') {
           this.cancelCountdown();
         }
@@ -486,7 +554,7 @@ export class GameRoom {
     let s = this.gameStats.get(playerId);
     if (!s) {
       const player = this.players.get(playerId);
-      s = { playerId, playerName: player?.name ?? 'Unknown', shotsFired: 0, shotsHit: 0, kills: 0, friendlyKills: 0, deaths: 0, buildingsBuilt: 0, jeepKills: 0 };
+      s = { playerId, playerName: player?.name ?? 'Unknown', shotsFired: 0, shotsHit: 0, kills: 0, friendlyKills: 0, deaths: 0, buildingsBuilt: 0, jeepKills: 0, playerKills: 0, cpuUnitsKilled: 0, buildingsDestroyed: 0, crystalsCollected: 0, upgradeCount: 0 };
       this.gameStats.set(playerId, s);
     }
     return s;
@@ -557,6 +625,27 @@ export class GameRoom {
         if (driverId) killerPlayer = [...this.players.values()].find(p => p.fpsEntityId === driverId);
       }
 
+      // Classify kill target
+      const BUILDING_TYPES = new Set(['main_base', 'tower', 'barracks', 'armory', 'farm', 'turret', 'sniper_nest', 'garage', 'hero_academy', 'player_tower']);
+      const isBuilding = BUILDING_TYPES.has(killed.entityType);
+      const victimIsHuman = killed.entityType === 'fps_player' &&
+        [...this.players.values()].some(p => p.fpsEntityId === killed.id);
+
+      // Also check AI players as potential killers
+      if (!killerPlayer && sourceEntity.entityType === 'fps_player') {
+        const killerAI = this.aiPlayers.find(ai => ai.fpsEntityId === sourceId);
+        if (killerAI) {
+          const isFriendly = killed.teamId === killerAI.teamId;
+          if (isFriendly) killerAI.stats.friendlyKills++;
+          else {
+            killerAI.stats.kills++;
+            if (victimIsHuman) killerAI.stats.playerKills++;
+            else if (isBuilding) killerAI.stats.buildingsDestroyed++;
+            else killerAI.stats.cpuUnitsKilled++;
+          }
+        }
+      }
+
       if (killerPlayer) {
         const s = this.getStats(killerPlayer.id);
         const isFriendly = killed.teamId === killerPlayer.team;
@@ -564,6 +653,9 @@ export class GameRoom {
           s.friendlyKills++;
         } else {
           s.kills++;
+          if (victimIsHuman) s.playerKills++;
+          else if (isBuilding) s.buildingsDestroyed++;
+          else s.cpuUnitsKilled++;
           // Road Rage: kill via jeep/helicopter
           if (sourceEntity.entityType === 'jeep' || sourceEntity.entityType === 'helicopter') {
             s.jeepKills++;
@@ -575,6 +667,9 @@ export class GameRoom {
       if (killed.entityType === 'fps_player') {
         const victim = [...this.players.values()].find(p => p.fpsEntityId === killed.id);
         if (victim) this.getStats(victim.id).deaths++;
+        // Also track AI deaths
+        const victimAI = this.aiPlayers.find(ai => ai.fpsEntityId === killed.id);
+        if (victimAI) victimAI.stats.deaths++;
       }
     };
 
@@ -584,6 +679,56 @@ export class GameRoom {
       const rtsPlayer = [...this.players.values()].find(p => p.team === building.teamId && p.role === 'rts');
       if (rtsPlayer) this.getStats(rtsPlayer.id).buildingsBuilt++;
     };
+
+    // Track stats: crystals collected
+    this.state.onCrystalsDeposited = (teamId, amount) => {
+      const rtsPlayer = [...this.players.values()].find(p => p.team === teamId && p.role === 'rts');
+      if (rtsPlayer) this.getStats(rtsPlayer.id).crystalsCollected += amount;
+      const rtsAI = this.aiPlayers.find(ai => ai.teamId === teamId && ai.controlsRTS);
+      if (rtsAI) rtsAI.stats.crystalsCollected += amount;
+    };
+
+    // Track stats: upgrades completed
+    this.state.onUpgradeComplete = (teamId) => {
+      const rtsPlayer = [...this.players.values()].find(p => p.team === teamId && p.role === 'rts');
+      if (rtsPlayer) this.getStats(rtsPlayer.id).upgradeCount++;
+      const rtsAI = this.aiPlayers.find(ai => ai.teamId === teamId && ai.controlsRTS);
+      if (rtsAI) rtsAI.stats.upgradeCount++;
+    };
+
+    // Announce hero upgrades to the team
+    this.state.onHeroUpgrade = (teamId, upgradeType) => {
+      const level = upgradeType === 'hero_hp' ? (this.state?.heroHpLevel[teamId] ?? 0)
+        : upgradeType === 'hero_damage' ? (this.state?.heroDmgLevel[teamId] ?? 0) : 0;
+      const msg = JSON.stringify({ type: 'hero_upgrade_complete', upgradeType, level });
+      for (const p of this.players.values()) {
+        if (p.team === teamId && p.ws.readyState === p.ws.OPEN) {
+          p.ws.send(msg);
+        }
+      }
+    };
+
+    // Create AI players based on CPU slot config — one per role so each
+    // respects its own difficulty setting
+    this.aiPlayers = [];
+    for (const teamId of [1, 2] as const) {
+      const fpsDiff = this.cpuSlots[`${teamId}_fps`];
+      const rtsDiff = this.cpuSlots[`${teamId}_rts`];
+      const hasFpsHuman = [...this.players.values()].some(p => p.team === teamId && p.role === 'fps');
+      const hasRtsHuman = [...this.players.values()].some(p => p.team === teamId && p.role === 'rts');
+
+      if (!hasFpsHuman && fpsDiff !== null) {
+        const ai = new AIPlayer(teamId, fpsDiff, true, false);
+        ai.fpsEntityId = (teamId === 1 ? team1Fps : team2Fps).id;
+        this.aiPlayers.push(ai);
+        this.gameStats.set(ai.id, ai.stats);
+      }
+      if (!hasRtsHuman && rtsDiff !== null) {
+        const ai = new AIPlayer(teamId, rtsDiff, false, true);
+        this.aiPlayers.push(ai);
+        this.gameStats.set(ai.id, ai.stats);
+      }
+    }
 
     this.tickInterval = setInterval(() => this.gameTick(), TICK_INTERVAL_MS);
   }
@@ -612,6 +757,47 @@ export class GameRoom {
       teamPlayerCount: teamCount,
     });
 
+    // Hand off AI role if a human is taking over
+    // Also: the human's previous role becomes CPU-controlled at the same difficulty
+    for (const ai of this.aiPlayers) {
+      if (ai.teamId !== player.team) continue;
+      if (player.role === 'fps' && ai.controlsFPS) {
+        const aiDiff = ai.difficulty;
+        ai.controlsFPS = false;
+        if (!ai.controlsRTS) {
+          this.aiPlayers = this.aiPlayers.filter(a => a !== ai);
+        }
+        // Create CPU for the RTS role the human is vacating (if no other human has it)
+        const hasRtsHuman = [...this.players.values()].some(
+          p => p.id !== player.id && p.team === player.team && p.role === 'rts',
+        );
+        if (!hasRtsHuman && !this.aiPlayers.some(a => a.teamId === player.team && a.controlsRTS)) {
+          const newAi = new AIPlayer(player.team, aiDiff, false, true);
+          this.aiPlayers.push(newAi);
+          this.gameStats.set(newAi.id, newAi.stats);
+        }
+      } else if (player.role === 'rts' && ai.controlsRTS) {
+        const aiDiff = ai.difficulty;
+        ai.controlsRTS = false;
+        if (!ai.controlsFPS) {
+          this.aiPlayers = this.aiPlayers.filter(a => a !== ai);
+        }
+        // Create CPU for the FPS role the human is vacating (if no other human has it)
+        const hasFpsHuman = [...this.players.values()].some(
+          p => p.id !== player.id && p.team === player.team && p.role === 'fps',
+        );
+        if (!hasFpsHuman && !this.aiPlayers.some(a => a.teamId === player.team && a.controlsFPS)) {
+          const fpsEntity = [...this.state!.entities.values()].find(
+            e => e.entityType === 'fps_player' && e.teamId === player.team,
+          );
+          const newAi = new AIPlayer(player.team, aiDiff, true, false);
+          newAi.fpsEntityId = fpsEntity?.id ?? null;
+          this.aiPlayers.push(newAi);
+          this.gameStats.set(newAi.id, newAi.stats);
+        }
+      }
+    }
+
     // Announce to all players
     const teamLabel = player.team === 1 ? 'Blue' : 'Red';
     this.broadcast({ type: 'chat', from: '', text: `${player.name} has joined the game (${teamLabel} Team)` });
@@ -633,13 +819,38 @@ export class GameRoom {
     }
     this.status = 'waiting';
     this.state = null;
+    this.aiPlayers = [];
+    this.rtsBrainDebug = false;
+    this.gameSpeed = 1;
+    this.lastSentEntities.clear();
+    this.deltaTickCounter = 0;
     this.onStatusChange?.();
   }
 
   private gameTick(): void {
     if (!this.state) return;
 
-    const dt = 1 / TICK_RATE;
+    const dt = (1 / TICK_RATE) * this.gameSpeed;
+
+    // Update AI players
+    for (const ai of this.aiPlayers) {
+      ai.update(dt, this.state);
+    }
+
+    // Send RTS brain debug info (throttled to once per second)
+    if (this.rtsBrainDebug && this.aiPlayers.length > 0 && this.state.tick % TICK_RATE === 0) {
+      const plans: Record<number, { name: string; actions: string[] }> = {};
+      for (const ai of this.aiPlayers) {
+        if (ai.controlsRTS) {
+          plans[ai.teamId] = { name: ai.name, actions: ai.getPlannedActions(this.state) };
+        }
+      }
+      const debugMsg = JSON.stringify({ type: 'rts_brain_debug', plans });
+      for (const p of this.players.values()) {
+        if (p.ws.readyState === p.ws.OPEN) p.ws.send(debugMsg);
+      }
+    }
+
     this.state.updateAll(dt);
 
     const trainingQueues: Record<number, { baseId: string; queue: { elapsed: number; duration: number; unitType?: string }[] }[]> = { 1: [], 2: [] };
@@ -656,7 +867,13 @@ export class GameRoom {
     for (const entity of entities) {
       if (entity.entityType === 'fps_player') {
         const player = [...this.players.values()].find(p => p.fpsEntityId === entity.id);
-        if (player) entity.playerName = player.name;
+        if (player) {
+          entity.playerName = player.name;
+        } else {
+          // Check AI players
+          const aiPlayer = this.aiPlayers.find(ai => ai.fpsEntityId === entity.id);
+          if (aiPlayer) entity.playerName = aiPlayer.name;
+        }
 
         // Attach killer info if dead
         const fpsEnt = this.state.entities.get(entity.id) as import('./GameState.js').FPSPlayerEntity | undefined;
@@ -667,7 +884,8 @@ export class GameRoom {
             const teamLabel = killerEntity.teamId === 1 ? "Blue" : "Red";
             if (killerEntity.entityType === 'fps_player') {
               const killerPlayer = [...this.players.values()].find(p => p.fpsEntityId === killerEntity.id);
-              entity.killerName = killerPlayer?.name ?? `${teamLabel} Player`;
+              const killerAI = !killerPlayer ? this.aiPlayers.find(ai => ai.fpsEntityId === killerEntity.id) : undefined;
+              entity.killerName = killerPlayer?.name ?? killerAI?.name ?? `${teamLabel} Player`;
             } else if (killerEntity.entityType === 'tower' || killerEntity.entityType === 'player_tower') {
               entity.killerName = `${teamLabel}'s Tower`;
             } else if (killerEntity.entityType === 'fighter') {
@@ -682,10 +900,10 @@ export class GameRoom {
       }
     }
 
-    const snapshot: SnapshotMsg = {
-      type: 'snapshot',
+    // Build base snapshot (metadata always sent in full — it's small)
+    const baseMeta = {
+      type: 'snapshot' as const,
       tick: this.state.tick,
-      entities,
       teamResources: { ...this.state.teamResources },
       teamSupply: {
         1: { ...this.state.teamSupply[1] },
@@ -696,11 +914,69 @@ export class GameRoom {
       gameTime: this.state.gameTime,
       fighterLevel: Math.floor(this.state.gameTime / 120),
       harvestBoost: { ...this.state.harvestBoost },
+      heroHpLevel: { ...this.state.heroHpLevel },
+      heroDmgLevel: { ...this.state.heroDmgLevel },
+      heroRegen: { ...this.state.heroRegen },
+      unitUpgradeLevel: { ...this.state.unitUpgradeLevel },
+      armoryLevel3: { ...this.state.armoryLevel3 },
+      playerStats: [...this.gameStats.values(), ...this.aiPlayers.map(ai => ai.stats)],
     };
 
-    this.broadcast(snapshot);
+    // Send full snapshot every 100 ticks (5 seconds) to prevent drift, delta otherwise
+    this.deltaTickCounter++;
+    const sendFull = this.deltaTickCounter >= 100;
+    if (sendFull) this.deltaTickCounter = 0;
+
+    // Pre-serialize each entity once for comparison
+    const entityJsonMap = new Map<string, string>();
+    for (const e of entities) {
+      entityJsonMap.set(e.id, JSON.stringify(e));
+    }
+    const currentIds = new Set(entities.map(e => e.id));
+
+    for (const player of this.players.values()) {
+      if (player.ws.readyState !== player.ws.OPEN) continue;
+
+      const lastSent = this.lastSentEntities.get(player.id);
+
+      if (sendFull || !lastSent) {
+        // Full snapshot
+        const snapshot: SnapshotMsg = { ...baseMeta, entities };
+        player.ws.send(JSON.stringify(snapshot));
+      } else {
+        // Delta: only send changed/new entities + removed IDs
+        const changedEntities: typeof entities = [];
+        for (const e of entities) {
+          const prevJson = lastSent.get(e.id);
+          const curJson = entityJsonMap.get(e.id)!;
+          if (prevJson !== curJson) {
+            changedEntities.push(e);
+          }
+        }
+        // Find removed entities
+        const removedIds: string[] = [];
+        for (const prevId of lastSent.keys()) {
+          if (!currentIds.has(prevId)) removedIds.push(prevId);
+        }
+
+        const delta: SnapshotMsg = {
+          ...baseMeta,
+          entities: changedEntities,
+          delta: true,
+          removedIds: removedIds.length > 0 ? removedIds : undefined,
+        };
+        player.ws.send(JSON.stringify(delta));
+      }
+
+      // Update last-sent state for this player
+      this.lastSentEntities.set(player.id, new Map(entityJsonMap));
+    }
 
     if (this.state.winner) {
+      // Merge AI stats into gameStats for the final report
+      for (const ai of this.aiPlayers) {
+        this.gameStats.set(ai.id, ai.stats);
+      }
       this.broadcast({ type: 'game_over', winnerTeam: this.state.winner, stats: [...this.gameStats.values()] });
       this.stop();
     }
@@ -727,7 +1003,22 @@ export class GameRoom {
     const target = this.state.entities.get(msg.targetId);
     if (!target || target.hp <= 0) return;
     if (target.entityType === 'main_base' && target.teamId === player.team) return;
-    this.state.applyDamage(target, msg.damage, player.fpsEntityId ?? '');
+    // Server-side LOS validation: reject hits through terrain
+    const shooter = player.fpsEntityId ? this.state.entities.get(player.fpsEntityId) : null;
+    if (shooter && !this.state.hasLineOfSight(shooter.position, target.position)) return;
+    // Apply Hero Academy damage multiplier (not for vehicle weapons)
+    let damage = msg.damage as number;
+    if (player.team) {
+      const dmgLevel = this.state.heroDmgLevel[player.team] ?? 0;
+      if (dmgLevel > 0) {
+        const vehicle = this.state.getPlayerVehicle(player.fpsEntityId ?? '');
+        if (!vehicle) {
+          const MULT = [1.25, 2.0, 3.0];
+          damage = Math.round(damage * MULT[dmgLevel - 1]);
+        }
+      }
+    }
+    this.state.applyDamage(target, damage, player.fpsEntityId ?? '');
   }
 
   // ===================== Networking =====================
@@ -754,6 +1045,7 @@ export class GameRoom {
       })),
       status: this.status,
       mapId: this.mapId,
+      cpuSlots: { ...this.cpuSlots },
     });
   }
 

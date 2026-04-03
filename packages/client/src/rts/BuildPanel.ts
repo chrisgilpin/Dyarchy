@@ -1,4 +1,4 @@
-export type BuildingChoice = 'farm' | 'barracks' | 'armory' | 'tower' | 'turret' | 'sniper_nest' | 'garage' | 'main_base';
+export type BuildingChoice = 'farm' | 'barracks' | 'armory' | 'tower' | 'turret' | 'sniper_nest' | 'garage' | 'main_base' | 'hero_academy';
 
 export interface BuildPanelCallbacks {
   onSelect: (building: BuildingChoice) => void;
@@ -14,17 +14,19 @@ export const BUILDING_COSTS: Record<BuildingChoice, number> = {
   sniper_nest: 250,
   garage: 300,
   main_base: 1000,
+  hero_academy: 400,
 };
 
-const BUILDING_INFO: Record<BuildingChoice, { label: string; cost: number; key: string; requiresUpgrade?: boolean }> = {
-  farm: { label: 'Farm', cost: 24, key: '1' },
-  barracks: { label: 'Barracks', cost: 150, key: '2' },
-  armory: { label: 'Armory', cost: 300, key: '3' },
-  tower: { label: 'Tower', cost: 500, key: '4' },
-  turret: { label: 'Turret', cost: 200, key: '5', requiresUpgrade: true },
-  sniper_nest: { label: 'Sniper Nest', cost: 250, key: '6' },
-  garage: { label: 'Garage', cost: 300, key: '7', requiresUpgrade: true },
-  main_base: { label: 'HQ', cost: 1000, key: '8' },
+const BUILDING_INFO: Record<BuildingChoice, { label: string; cost: number; requiresUpgrade?: boolean }> = {
+  farm: { label: 'Farm', cost: 24 },
+  barracks: { label: 'Barracks', cost: 150 },
+  armory: { label: 'Armory', cost: 300 },
+  tower: { label: 'Tower', cost: 500 },
+  turret: { label: 'Turret', cost: 200, requiresUpgrade: true },
+  sniper_nest: { label: 'Sniper Nest', cost: 250 },
+  garage: { label: 'Garage', cost: 300, requiresUpgrade: true },
+  main_base: { label: 'HQ', cost: 1000 },
+  hero_academy: { label: 'Hero Academy', cost: 400 },
 };
 
 export class BuildPanel {
@@ -51,7 +53,7 @@ export class BuildPanel {
     for (const [type, info] of Object.entries(BUILDING_INFO) as [BuildingChoice, typeof BUILDING_INFO[BuildingChoice]][]) {
       const btn = document.createElement('button');
       btn.dataset.building = type;
-      btn.innerHTML = `<strong>${info.label}</strong><br><small>${info.cost} crystals [${info.key}]</small>`;
+      btn.innerHTML = `<strong>${info.label}</strong><br><small>${info.cost} 💎</small>`;
       btn.style.cssText = `
         padding: 10px 16px;
         background: rgba(0,0,0,0.7);
@@ -101,6 +103,10 @@ export class BuildPanel {
     this.el.style.display = 'none';
   }
 
+  isVisible(): boolean {
+    return this.el.style.display !== 'none';
+  }
+
   getActiveBuilding(): BuildingChoice | null {
     return this.activeBuilding;
   }
@@ -132,12 +138,6 @@ export class BuildPanel {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     switch (e.code) {
-      case 'Digit1': this.selectBuilding('barracks'); break;
-      case 'Digit2': this.selectBuilding('armory'); break;
-      case 'Digit3': this.selectBuilding('tower'); break;
-      case 'Digit4': if (this.baseUpgraded) this.selectBuilding('turret'); break;
-      case 'Digit5': if (this.baseUpgraded) this.selectBuilding('garage'); break;
-      case 'Digit8': this.selectBuilding('main_base'); break;
       case 'Escape':
         if (this.activeBuilding) {
           this.activeBuilding = null;

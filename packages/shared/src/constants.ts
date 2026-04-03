@@ -99,8 +99,8 @@ export const VEGETATION: { pos: Vec3; type: 'tree' | 'rock' }[] = [
 
 // Hero system
 export const HERO_ABILITY_MAX_CHARGE = 6;   // seconds of full use
-export const HERO_ABILITY_RECHARGE_MULT = 2.5; // recharges 2.5x slower than it drains (15s from empty)
-export const HERO_DEPLETED_LOCKOUT = 60;    // seconds lockout if fully depleted
+export const HERO_ABILITY_RECHARGE_MULT = 0.83; // recharges ~0.83x slower than it drains (~5s from empty)
+export const HERO_DEPLETED_LOCKOUT = 20;    // seconds lockout if fully depleted
 export const SHIELD_MAX_HP = 200;
 export const SHIELD_RADIUS = PLAYER_HEIGHT * 2.5;  // sphere radius centered on tank (50% of original)
 export const HEAL_AURA_RADIUS = 7;

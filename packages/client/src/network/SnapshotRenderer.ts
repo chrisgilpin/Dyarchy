@@ -6,7 +6,7 @@ import { SoundManager } from '../audio/SoundManager.js';
 import {
   createMainBase, createTower, createBarracks, createArmory, createFarm,
   createPlayerTower, createTurret, createSniperNest, createResourceNode, createWorker, createFighter, createArcher,
-  createFPSPlayer, createFootSoldier, createGarage, createJeep, createHelicopter,
+  createFPSPlayer, createFootSoldier, createGarage, createJeep, createHelicopter, createHeroAcademy,
 } from '../renderer/MeshFactory.js';
 
 type TeamId = 1 | 2;
@@ -23,6 +23,7 @@ const MESH_CREATORS: Record<string, (teamId: TeamId) => THREE.Mesh> = {
   garage: (t) => createGarage(t),
   jeep: (t) => createJeep(t),
   helicopter: (t) => createHelicopter(t),
+  hero_academy: (t) => createHeroAcademy(t),
   worker: (t) => createWorker(t),
   fighter: (t) => createFighter(t),
   fps_player: (t) => createFPSPlayer(t),
@@ -44,6 +45,7 @@ const BUILDING_COLLISION: Record<string, { hx: number; hy: number; hz: number; c
   turret: { hx: 1.5, hy: 1.5, hz: 1.5, cy: 1 },
   farm: { hx: 2.5, hy: 2, hz: 2.5, cy: 2 },
   garage: { hx: 3.5, hy: 2.5, hz: 3, cy: 2.5 },
+  hero_academy: { hx: 3.5, hy: 3, hz: 3.5, cy: 3 },
   // sniper_nest: open structure, no solid collision box
 };
 
@@ -58,11 +60,13 @@ interface InterpState {
 }
 
 export class SnapshotRenderer {
-  private sceneManager: SceneManager;
+  readonly sceneManager: SceneManager;
   private knownEntities = new Map<string, SceneEntity>();
   private obstacleIds = new Set<string>();
   private prevActiveIds = new Set<string>();
   private lastSnapshot: SnapshotMsg | null = null;
+  /** Cached full entity list — deltas are merged into this */
+  private cachedEntities = new Map<string, SnapshotEntity>();
 
   // Interpolation state
   private interpStates = new Map<string, InterpState>();
@@ -89,6 +93,8 @@ export class SnapshotRenderer {
   localTeamId: 1 | 2 = 1;
   /** Whether the local player is currently in FPS mode */
   isFPSMode = false;
+  /** The layer the local player is on (0 = surface, >0 = underground) */
+  localLayerId = 0;
   /** Called when a building transitions to active */
   onBuildingComplete: ((entityType: string, teamId: TeamId) => void) | null = null;
   /** Called when a main_base upgrades (level changes) */
@@ -241,16 +247,50 @@ export class SnapshotRenderer {
         while (diff < -Math.PI) diff += Math.PI * 2;
         entity.rotation.y = interp.prevRot.y + diff * t;
         entity.mesh.rotation.y = entity.rotation.y;
-        // No terrain tilt for helicopter — stays level
-        entity.mesh.rotation.x = 0;
-        entity.mesh.rotation.z = 0;
+
+        // Tilt based on movement: nose down when moving forward, roll when strafing
+        const dx = interp.nextPos.x - interp.prevPos.x;
+        const dz = interp.nextPos.z - interp.prevPos.z;
+        const hSpeed = Math.sqrt(dx * dx + dz * dz) / this.snapshotInterval;
+        if (hSpeed > 0.5) {
+          // Decompose velocity into forward and lateral components relative to heading
+          const heading = entity.rotation.y;
+          const cosH = Math.cos(heading);
+          const sinH = Math.sin(heading);
+          // Forward component (along -sinH, -cosH)
+          const fwd = -(dx * sinH + dz * cosH) / this.snapshotInterval;
+          // Lateral component (along cosH, -sinH = right)
+          const lat = (dx * cosH - dz * sinH) / this.snapshotInterval;
+          const maxTilt = 0.3; // ~17 degrees max
+          const targetPitchH = -Math.min(maxTilt, Math.max(-maxTilt, fwd * 0.015));
+          const targetRollH = -Math.min(maxTilt, Math.max(-maxTilt, lat * 0.015));
+          const prevPitchH = entity.mesh.rotation.x || 0;
+          const prevRollH = entity.mesh.rotation.z || 0;
+          const tiltSmoothing = 1 - Math.exp(-6 * dt);
+          entity.mesh.rotation.x = prevPitchH + (targetPitchH - prevPitchH) * tiltSmoothing;
+          entity.mesh.rotation.z = prevRollH + (targetRollH - prevRollH) * tiltSmoothing;
+        } else {
+          // Return to level
+          const tiltSmoothing = 1 - Math.exp(-4 * dt);
+          entity.mesh.rotation.x *= (1 - tiltSmoothing);
+          entity.mesh.rotation.z *= (1 - tiltSmoothing);
+        }
 
         // Spin rotors
         const mainRotor = entity.mesh.getObjectByName('mainRotor');
         if (mainRotor) mainRotor.rotation.y += dt * 15;
         const tailRotor = entity.mesh.getObjectByName('tailRotor');
         if (tailRotor) tailRotor.rotation.x += dt * 25;
+      } else if (entity.entityType === 'fps_player') {
+        // FPS player: server sends real yaw — apply to mesh with angle-aware lerp
+        let diff = interp.nextRot.y - interp.prevRot.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        entity.rotation.y = interp.prevRot.y + diff * t;
+        entity.mesh.rotation.y = entity.rotation.y;
       } else {
+        // Other units (fighters, workers, etc.): server sends vec3(0) rotation,
+        // facing is handled by RTSController.updateFacing based on movement
         entity.rotation.y = interp.prevRot.y + (interp.nextRot.y - interp.prevRot.y) * t;
       }
       entity.rotation.z = interp.nextRot.z; // firing flag, don't lerp
@@ -332,6 +372,31 @@ export class SnapshotRenderer {
     }
     this.snapshotTime = 0;
 
+    // Merge delta into cached entity state
+    if (snapshot.delta) {
+      // Update/add changed entities
+      for (const e of snapshot.entities) {
+        this.cachedEntities.set(e.id, e);
+      }
+      // Remove deleted entities
+      if (snapshot.removedIds) {
+        for (const id of snapshot.removedIds) {
+          this.cachedEntities.delete(id);
+        }
+      }
+    } else {
+      // Full snapshot — replace cache entirely
+      this.cachedEntities.clear();
+      for (const e of snapshot.entities) {
+        this.cachedEntities.set(e.id, e);
+      }
+    }
+
+    // Build the effective full entity list from cache
+    const allEntities = [...this.cachedEntities.values()];
+    // Replace snapshot.entities with the full list for downstream code
+    snapshot.entities = allEntities;
+
     this.lastSnapshot = snapshot;
     const scene = this.sceneManager.scene;
     const serverIds = new Set<string>();
@@ -404,6 +469,17 @@ export class SnapshotRenderer {
           });
         }
 
+        // Sync hero state on creation
+        if (se.entityType === 'fps_player') {
+          const created = this.knownEntities.get(se.id);
+          if (created) {
+            created.heroType = se.heroType;
+            created.heroAbilityActive = se.heroAbilityActive;
+            created.shieldHp = se.shieldHp;
+            created.playerName = se.playerName;
+          }
+        }
+
         // Create name label for fps_player entities
         if (se.entityType === 'fps_player' && se.playerName) {
           const label = this.createNameLabel(se.playerName, se.teamId);
@@ -418,6 +494,13 @@ export class SnapshotRenderer {
         existing.maxHp = se.maxHp;
         existing.status = se.status;
         existing.constructionProgress = se.constructionProgress;
+        // Sync hero state for fps_player entities
+        if (se.entityType === 'fps_player') {
+          existing.heroType = se.heroType;
+          existing.heroAbilityActive = se.heroAbilityActive;
+          existing.shieldHp = se.shieldHp;
+          existing.playerName = se.playerName;
+        }
 
         // Detect HQ upgrade
         if (se.entityType === 'main_base' && se.level && se.level > (existing.level ?? 1)) {
@@ -482,6 +565,15 @@ export class SnapshotRenderer {
           existing.rotation = { ...se.rotation };
         }
 
+        // Hide entities on different layers (underground vs surface)
+        const entityLayer = se.layerId ?? 0;
+        if (entityLayer !== this.localLayerId && se.id !== this.localFPSEntityId) {
+          existing.mesh.visible = false;
+          continue;
+        } else if (existing.mesh.visible === false && existing.hp > 0) {
+          existing.mesh.visible = true;
+        }
+
         // Update opacity for constructing buildings
         if (se.status === 'constructing') {
           this.setMeshOpacity(existing.mesh, 0.3 + 0.7 * se.constructionProgress);
@@ -511,6 +603,16 @@ export class SnapshotRenderer {
       const entity = this.knownEntities.get(se.id);
       if (entity && se.id === this.localFPSEntityId) {
         entity.mesh.visible = !this.isFPSMode;
+        this.localLayerId = se.layerId ?? 0;
+      }
+
+      // Hide fps_player mesh when inside a helicopter (for all players)
+      if (entity && se.entityType === 'fps_player' && se.id !== this.localFPSEntityId) {
+        const inHeli = snapshot.entities.some(
+          e => e.entityType === 'helicopter' && e.driverId === se.id,
+        );
+        if (inHeli) entity.mesh.visible = false;
+        else if (se.hp > 0) entity.mesh.visible = true;
       }
 
       // Hero visuals for friendly fps_players (icon, aura, glow)
@@ -663,6 +765,7 @@ export class SnapshotRenderer {
       case 'farm': return 'Farm';
       case 'turret': return 'Turret';
       case 'garage': return 'Garage';
+      case 'hero_academy': return 'Hero Academy';
       case 'jeep': return 'Jeep';
       case 'helicopter': return 'Helicopter';
       default: return se.entityType;
@@ -1161,6 +1264,7 @@ export class SnapshotRenderer {
       this.sceneManager.scene.remove(entity.mesh);
     }
     this.knownEntities.clear();
+    this.cachedEntities.clear();
     for (const [, label] of this.nameLabels) {
       this.sceneManager.scene.remove(label);
       (label.material as THREE.SpriteMaterial).map?.dispose();

@@ -1,4 +1,4 @@
-import type { Vec3, TeamId, Role, HeroType } from './types.js';
+import type { Vec3, TeamId, Role, HeroType, AIDifficulty } from './types.js';
 import type { MapId } from './maps.js';
 
 // ===================== Client → Server =====================
@@ -52,7 +52,7 @@ export interface FPSHitMsg {
 
 export interface RTSCommandMsg {
   type: 'rts_command';
-  command: 'move' | 'attack' | 'harvest' | 'build_at' | 'place_building' | 'repair';
+  command: 'move' | 'attack' | 'force_attack' | 'follow' | 'harvest' | 'build_at' | 'place_building' | 'repair' | 'cancel_build';
   unitIds: string[];
   targetPos?: Vec3;
   targetId?: string;
@@ -74,7 +74,7 @@ export interface RTSCancelTrainMsg {
 export interface RTSUpgradeMsg {
   type: 'rts_upgrade';
   buildingId: string;
-  upgradeType: 'barracks_level2' | 'base_upgrade' | 'armory_level2' | 'harvest_boost';
+  upgradeType: 'barracks_level2' | 'base_upgrade' | 'armory_level2' | 'harvest_boost' | 'hero_hp' | 'hero_damage' | 'hero_regen';
 }
 
 export interface ChangeNameMsg {
@@ -181,6 +181,7 @@ export interface RoomStateMsg {
   players: { id: string; name: string; team: TeamId | null; role: Role | null; ready: boolean }[];
   status: 'waiting' | 'playing';
   mapId: MapId;
+  cpuSlots?: Record<string, AIDifficulty | null>; // "1_fps" | "1_rts" | "2_fps" | "2_rts"
 }
 
 export interface LobbyRoomInfo {
@@ -223,6 +224,7 @@ export interface SnapshotEntity {
   constructionProgress: number;
   playerName?: string;
   level?: number;
+  layerId?: number; // 0 = surface (default), >0 = underground layer
   killerEntityId?: string;
   killerName?: string;
   driverId?: string;
@@ -252,6 +254,13 @@ export interface SnapshotMsg {
   gameTime: number;
   fighterLevel: number;
   harvestBoost?: Record<number, boolean>;
+  heroHpLevel?: Record<number, number>;
+  heroDmgLevel?: Record<number, number>;
+  heroRegen?: Record<number, boolean>;
+  playerStats?: PlayerGameStats[];
+  // Delta compression fields (only present on delta snapshots)
+  delta?: boolean;              // true = this is a delta, not a full snapshot
+  removedIds?: string[];        // entities that were removed since last snapshot
 }
 
 export interface FPSCorrectionMsg {
@@ -278,6 +287,11 @@ export interface PlayerGameStats {
   deaths: number;
   buildingsBuilt: number;
   jeepKills: number;
+  playerKills: number;
+  cpuUnitsKilled: number;
+  buildingsDestroyed: number;
+  crystalsCollected: number;
+  upgradeCount: number;
 }
 
 export interface GameOverMsg {

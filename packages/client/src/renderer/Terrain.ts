@@ -1,10 +1,11 @@
 import { MAP_WIDTH, MAP_DEPTH } from '@dyarchy/shared';
 import type { MapConfig } from '@dyarchy/shared';
 
+// Re-export the shared terrain height function so existing client imports still work
+export { createTerrainHeightFn } from '@dyarchy/shared';
+
 /**
- * Gentle rolling hills using layered sine waves.
- * Max elevation ~2 units. Flat near the center for fair combat.
- * This is the default (meadow) terrain — kept for offline mode backward compat.
+ * Legacy default terrain height function for meadow map (offline mode backward compat).
  */
 export function getTerrainHeight(x: number, z: number): number {
   // Normalize to 0-1 range
@@ -26,32 +27,4 @@ export function getTerrainHeight(x: number, z: number): number {
   h *= centerFade;
 
   return Math.max(0, h);
-}
-
-/**
- * Creates a terrain height function from a MapConfig's terrain parameters.
- */
-export function createTerrainHeightFn(config: MapConfig): (x: number, z: number) => number {
-  const { width, depth, terrain } = config;
-  const halfW = width / 2;
-  const halfD = depth / 2;
-
-  return (x: number, z: number): number => {
-    const nx = (x + halfW) / width;
-    const nz = (z + halfD) / depth;
-
-    const cx = Math.abs(x) / halfW;
-    const cz = Math.abs(z) / halfD;
-    const centerFade = Math.max(0, Math.min(1, (Math.max(cx, cz) - terrain.flatCenterRadius) / terrain.fadeWidth));
-
-    let h = 0;
-    for (const layer of terrain.layers) {
-      h += Math.sin(nx * Math.PI * layer.freqX + layer.phaseX)
-         * Math.cos(nz * Math.PI * layer.freqZ + layer.phaseZ)
-         * layer.amp;
-    }
-
-    h *= centerFade;
-    return Math.max(0, Math.min(terrain.maxElevation, h));
-  };
 }

@@ -42,6 +42,7 @@ export function applyMovement(
   input: InputState,
   dt: number,
   bounds?: { halfW: number; halfD: number },
+  groundY: number = GROUND_Y,
 ): MovementResult {
   const yaw = input.yaw;
 
@@ -82,7 +83,7 @@ export function applyMovement(
   let vz = moveZ;
 
   // Check if on ground
-  const onGround = position.y <= GROUND_Y + 0.01;
+  const onGround = position.y <= groundY + 0.01;
 
   // Jump
   if (input.jump && onGround) {
@@ -98,8 +99,8 @@ export function applyMovement(
   let newZ = position.z + vz * dt;
 
   // Ground collision
-  if (newY < GROUND_Y) {
-    newY = GROUND_Y;
+  if (newY < groundY) {
+    newY = groundY;
     vy = 0;
   }
 
@@ -112,7 +113,7 @@ export function applyMovement(
   return {
     position: { x: newX, y: newY, z: newZ },
     velocity: { x: vx, y: vy, z: vz },
-    onGround: newY <= GROUND_Y + 0.01,
+    onGround: newY <= groundY + 0.01,
   };
 }
 

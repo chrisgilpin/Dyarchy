@@ -74,6 +74,18 @@ export const WEAPONS: Record<string, WeaponDef> = {
     color: 0x334455,
     slot: 'secondary',
   },
+  heli_minigun: {
+    id: 'heli_minigun',
+    name: 'Helicopter Minigun',
+    damage: 4,
+    fireRate: 20,
+    range: 150,
+    spread: 0.015,
+    spreadPerDist: 0.0005,
+    pellets: 1,
+    color: 0x333333,
+    slot: 'primary',
+  },
 };
 
 /** Creates a simple weapon viewmodel mesh for rendering in front of the camera */

@@ -12,6 +12,7 @@ import { WEAPONS, type WeaponDef, createWeaponModel } from './Weapons.js';
 import type { SceneManager, SceneEntity } from '../renderer/SceneManager.js';
 import { createFPSPlayer } from '../renderer/MeshFactory.js';
 import { isMobile, TouchControls } from './TouchControls.js';
+import type { GamepadInput } from '../vr/VRManager.js';
 // getTerrainHeight accessed via this.sceneManager.terrainHeight
 
 const RESPAWN_TIME = 7;
@@ -92,6 +93,10 @@ export class FPSController {
   heroAbilityLockout = 0;
   shieldHp = 0;
   baseUpgraded = false;
+  hasHeroAcademy = false;
+  heroHpLevel = 0;
+  heroDmgLevel = 0;
+  heroRegenActive = false;
   private shieldMesh: THREE.Mesh | null = null;
   private heroSelectionContainer: HTMLDivElement | null = null;
   private abilityBar: HTMLDivElement | null = null;
@@ -102,6 +107,21 @@ export class FPSController {
   readonly mobile = isMobile();
   private touchControls: TouchControls | null = null;
 
+  // VR mode
+  vrMode = false;
+  vrCameraRig: THREE.Group | null = null;
+  vrGamepadInput: GamepadInput | null = null;
+  vrAimPitch = 0; // gamepad-controlled pitch for VR aiming (set by game loop)
+
+  // Gamepad edge-detection state (tracks which buttons were held last frame)
+  private gpPrev = {
+    fire: false, altFire: false, jump: false,
+    interact: false, swap: false, heroAbility: false, reload: false,
+  };
+
+  // Hysteresis state for analog stick → boolean conversion (prevents jitter near deadzone)
+  private gpMoveState = { forward: false, backward: false, left: false, right: false };
+
   // Vehicle state
   inVehicle = false;
   vehicleId: string | null = null;
@@ -110,6 +130,18 @@ export class FPSController {
   private vehicleHeading = 0;
   private shiftHeld = false;
   private vehicleChaseCamAngle = 0; // horizontal orbit angle relative to vehicle
+
+  // Helicopter aiming: offset within the targeting circle (world units, clamped to radius 3)
+  private heliAimX = 0; // lateral offset (positive = right of heading)
+  private heliAimZ = 0; // forward/back offset (positive = forward of center aim point)
+  private heliAimPitch = 0; // vertical aim angle (positive = up, negative = down)
+  private heliTargetRing: HTMLDivElement | null = null;
+  private heliGunSpinSpeed = 0; // gatling barrel spin speed (radians/sec)
+  private heliCrosshair: HTMLDivElement | null = null; // circular crosshair for helicopter
+  private heliGunHeat = 0;        // 0–5 seconds of firing accumulated
+  private heliGunOverheated = false; // true = forced cooldown, can't fire
+  private heliMouseHeld = false;   // mouse button held state for auto-fire
+  private heliHeatBar: HTMLDivElement | null = null; // heat indicator HUD
 
   // Weapon viewmodel
   private weaponScene: THREE.Scene;
@@ -161,7 +193,7 @@ export class FPSController {
     this.canvas = canvas;
     this.spawnPosition = spawnPosition.clone();
     this.position = spawnPosition.clone();
-    this.position.y = GROUND_Y + PLAYER_HEIGHT;
+    this.position.y = sceneManager.terrainHeight(spawnPosition.x, spawnPosition.z) + PLAYER_HEIGHT;
     this.obstacleBoxes = obstacleBoxes;
     this.sceneManager = sceneManager;
 
@@ -190,10 +222,27 @@ export class FPSController {
     });
 
     document.addEventListener('mousemove', (e) => {
-      if (!this.locked || this.armoryMenuVisible) return;
-      this.yaw -= e.movementX * MOUSE_SENSITIVITY;
-      this.pitch -= e.movementY * MOUSE_SENSITIVITY;
-      this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
+      if (!this.locked || this.armoryMenuVisible || this.vrGamepadInput) return;
+      if (this.inVehicle && this.vehicleType === 'helicopter') {
+        // In helicopter: mouse moves the aim offset within the targeting circle
+        const aimSensitivity = 0.03;
+        this.heliAimX += e.movementX * aimSensitivity;
+        this.heliAimZ -= e.movementY * aimSensitivity;
+        const dist = Math.sqrt(this.heliAimX * this.heliAimX + this.heliAimZ * this.heliAimZ);
+        if (dist > 3) {
+          this.heliAimX *= 3 / dist;
+          this.heliAimZ *= 3 / dist;
+          // Horizontal overflow: turn the helicopter
+          this.yaw -= e.movementX * MOUSE_SENSITIVITY;
+          // Vertical overflow: adjust aim pitch (down = negative, looking below heli)
+          this.heliAimPitch -= e.movementY * MOUSE_SENSITIVITY;
+          this.heliAimPitch = Math.max(-0.6, Math.min(0.4, this.heliAimPitch));
+        }
+      } else {
+        this.yaw -= e.movementX * MOUSE_SENSITIVITY;
+        this.pitch -= e.movementY * MOUSE_SENSITIVITY;
+        this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
+      }
     });
 
     document.addEventListener('keydown', (e) => {
@@ -210,8 +259,15 @@ export class FPSController {
 
     document.addEventListener('mousedown', (e) => {
       if (!this.enabled || !this.locked || this.isDead || this.armoryMenuVisible) return;
-      if (e.button === 0) this.tryShoot();
+      if (e.button === 0) {
+        this.heliMouseHeld = true;
+        this.tryShoot();
+      }
       if (e.button === 2) this.toggleScope();
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.heliMouseHeld = false;
     });
 
     // Prevent context menu on right click
@@ -342,6 +398,8 @@ export class FPSController {
     this.waveTimerHud.style.display = 'none';
     const badge = document.getElementById('fps-team-badge');
     if (badge) badge.style.display = 'none';
+    const lvlBadges = document.getElementById('fps-level-badges');
+    if (lvlBadges) lvlBadges.style.display = 'none';
     this.hideArmoryMenu();
     this.playerMesh.visible = true;
     if (this.mobile) this.touchControls?.hide();
@@ -357,6 +415,10 @@ export class FPSController {
     this.scopeOverlay?.remove();
     this.damageBorder.remove();
     document.getElementById('fps-team-badge')?.remove();
+    document.getElementById('fps-level-badges')?.remove();
+    this.heliCrosshair?.remove();
+    this.heliTargetRing?.remove();
+    this.heliHeatBar?.remove();
     this.removeShieldVisual();
     if (this.heroSelectionContainer) { this.heroSelectionContainer.remove(); this.heroSelectionContainer = null; }
   }
@@ -425,33 +487,38 @@ export class FPSController {
       return;
     }
 
-    // Sync HP damage from server (e.g. tower shot us)
-    if (serverHp < this.hp && !this.isDead) {
+    // Sync HP from server (damage or regen)
+    if (!this.isDead && serverHp !== this.hp) {
+      if (serverHp < this.hp) {
+        this.flashDamageVignette();
+      }
       this.hp = serverHp;
       this.maxHp = serverMaxHp;
       this.updateHud();
-      this.flashDamageVignette();
       if (this.hp <= 0) {
         this.hp = 0;
         this.die();
       }
     }
 
-    // Position reconciliation — keep client in sync with server (XZ only; Y is terrain-relative on client)
+    // Position reconciliation — keep client in sync with server
     // Skip when in vehicle (vehicle mesh drives position) or after sniper nest teleport
     if (!this.isDead && !this.inVehicle && this.nestTeleportCooldown <= 0) {
       const dx = serverPos.x - this.position.x;
+      const dy = serverPos.y - this.position.y;
       const dz = serverPos.z - this.position.z;
-      const distSq = dx * dx + dz * dz;
+      const distSq = dx * dx + dy * dy + dz * dz;
 
       if (distSq > 9) {
         // Major desync (> 3 units) — hard snap to server
         this.position.x = serverPos.x;
+        this.position.y = serverPos.y;
         this.position.z = serverPos.z;
         this.velocity = { x: 0, y: 0, z: 0 };
       } else if (distSq > 0.04) {
         // Minor drift (> 0.2 units) — gentle correction
         this.position.x += dx * 0.1;
+        this.position.y += dy * 0.1;
         this.position.z += dz * 0.1;
       }
     }
@@ -464,6 +531,18 @@ export class FPSController {
 
   getPosition(): THREE.Vector3 {
     return this.position.clone();
+  }
+
+  /** Get gamepad-controlled aim direction in VR (rig yaw + vrAimPitch, ignores head). */
+  private getVRAimDirection(): THREE.Vector3 {
+    const rigYaw = this.vrCameraRig?.rotation.y ?? 0;
+    const pitch = this.vrAimPitch;
+    const dir = new THREE.Vector3(
+      -Math.sin(rigYaw) * Math.cos(pitch),
+      -Math.sin(pitch),
+      -Math.cos(rigYaw) * Math.cos(pitch),
+    );
+    return dir.normalize();
   }
 
   /** Cheat: clear all weapon cooldowns (single-player only) */
@@ -499,7 +578,7 @@ export class FPSController {
   }
 
   isPointerLocked(): boolean {
-    return this.locked || this.mobile;
+    return this.locked || this.mobile || this.vrMode || this.vrGamepadInput !== null;
   }
 
   // ===================== Input =====================
@@ -668,10 +747,28 @@ export class FPSController {
 
   // ===================== Update =====================
 
+  /** Check if this FPS player is inside an enemy tank's shield sphere */
+  private getShieldSlow(): number {
+    const SHIELD_R = 1.5 * 2.5; // PLAYER_HEIGHT * 2.5 from constants
+    for (const ent of this.sceneManager.entities) {
+      if (ent.entityType !== 'fps_player') continue;
+      if (ent.teamId === this.localTeamId) continue;
+      if (!ent.heroAbilityActive || ent.heroType !== 'tank') continue;
+      if ((ent.shieldHp ?? 0) <= 0) continue;
+      const dx = this.position.x - ent.mesh.position.x;
+      const dz = this.position.z - ent.mesh.position.z;
+      if (Math.sqrt(dx * dx + dz * dz) <= SHIELD_R) return 0.34;
+    }
+    return 1;
+  }
+
   /** Tick weapon cooldowns — call every frame regardless of FPS/RTS mode */
   tickCooldowns(dt: number): void {
+    // Enemy shield slow: cooldowns tick 66% slower
+    const slow = this.getShieldSlow();
+    const effectiveDt = dt * slow;
     for (const [id, cd] of this.weaponCooldowns) {
-      const newCd = cd - dt;
+      const newCd = cd - effectiveDt;
       if (newCd <= 0) this.weaponCooldowns.delete(id);
       else this.weaponCooldowns.set(id, newCd);
     }
@@ -680,8 +777,102 @@ export class FPSController {
   update(dt: number): void {
     if (!this.enabled) return;
 
+    // Gamepad input: map sticks + buttons to movement keys and actions
+    if (this.vrGamepadInput) {
+      const gp = this.vrGamepadInput;
+      const prev = this.gpPrev;
+
+      // Left stick → movement (hysteresis to prevent jitter near deadzone)
+      // Turn ON at 0.25, turn OFF at 0.10 — prevents oscillation near threshold
+      const ON = 0.25, OFF = 0.10;
+      const ms = this.gpMoveState;
+      ms.forward  = gp.moveY < -(ms.forward  ? OFF : ON);
+      ms.backward = gp.moveY >  (ms.backward ? OFF : ON);
+      ms.left     = gp.moveX < -(ms.left     ? OFF : ON);
+      ms.right    = gp.moveX >  (ms.right    ? OFF : ON);
+      this.keys.forward = ms.forward;
+      this.keys.backward = ms.backward;
+      this.keys.left = ms.left;
+      this.keys.right = ms.right;
+      this.keys.jump = gp.jump;
+
+      // Right stick → camera look (flat-screen only; VR uses head tracking)
+      if (!this.vrMode) {
+        const GAMEPAD_LOOK_SPEED = 3.0;
+        this.yaw -= gp.lookX * GAMEPAD_LOOK_SPEED * dt;
+        this.pitch -= gp.lookY * GAMEPAD_LOOK_SPEED * dt;
+        this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
+      }
+
+      if (!this.isDead) {
+        // R2/RT — fire (edge-detect for semi-auto, hold for auto)
+        if (gp.fire) {
+          if (!prev.fire) this.tryShoot();
+          prev.fire = true;
+        } else {
+          prev.fire = false;
+        }
+
+        // L2/LT — scope toggle (edge-detect)
+        if (gp.altFire && !prev.altFire) this.toggleScope();
+        prev.altFire = gp.altFire;
+
+        // Triangle/Y — interact (edge-detect)
+        if (gp.interact && !prev.interact) {
+          if (this.inVehicle) {
+            this.exitVehicle();
+          } else if (!this.tryEnterVehicle()) {
+            this.tryInteractArmory();
+          }
+        }
+        prev.interact = gp.interact;
+
+        // Square/X — weapon swap (edge-detect)
+        if (gp.swap && !prev.swap && this.secondaryWeapon) {
+          this.resetScope();
+          this.activeSlot = this.activeSlot === 'primary' ? 'secondary' : 'primary';
+          this.setWeaponModel(this.getActiveWeapon());
+          this.updateHud();
+          SoundManager.instance().weaponSwitch();
+        }
+        prev.swap = gp.swap;
+
+        // R1/RB — also weapon swap (alternative)
+        if (gp.reload && !prev.reload && this.secondaryWeapon) {
+          this.resetScope();
+          this.activeSlot = this.activeSlot === 'primary' ? 'secondary' : 'primary';
+          this.setWeaponModel(this.getActiveWeapon());
+          this.updateHud();
+          SoundManager.instance().weaponSwitch();
+        }
+        prev.reload = gp.reload;
+
+        // L1/LB — hero ability (hold to activate, release to deactivate)
+        if (gp.heroAbility && !prev.heroAbility) {
+          if (this.inVehicle && this.vehicleSeat === 'driver' && this.vehicleType === 'jeep') {
+            const sm = SoundManager.instance();
+            if (sm.playHorn(this.position.x, this.position.z)) {
+              this.onServerMessage?.({ type: 'horn_honk', vehicleId: this.vehicleId! });
+            }
+          } else if (!this.inVehicle && this.heroType && !this.heroAbilityActive && !this.heroAbilityDepleted && this.heroAbilityCharge > 0) {
+            this.heroAbilityActive = true;
+            this.onServerMessage?.({ type: 'hero_ability', active: true });
+            if (this.heroType !== 'tank') this.hideWeaponModel();
+            this.showShieldVisual();
+          }
+        }
+        if (!gp.heroAbility && prev.heroAbility && this.heroAbilityActive) {
+          this.heroAbilityActive = false;
+          this.onServerMessage?.({ type: 'hero_ability', active: false });
+          if (this.heroType !== 'tank') this.restoreWeaponModel();
+          this.removeShieldVisual();
+        }
+        prev.heroAbility = gp.heroAbility;
+      }
+    }
+
     // Mobile touch input: read touch state into keys and camera
-    if (this.mobile && this.touchControls) {
+    if (!this.vrGamepadInput && this.mobile && this.touchControls) {
       const ts = this.touchControls.state;
       this.keys.forward = ts.forward;
       this.keys.backward = ts.backward;
@@ -701,6 +892,30 @@ export class FPSController {
       }
     }
 
+    // Helicopter minigun: auto-fire while mouse/trigger held + overheat system
+    if (this.inVehicle && this.vehicleType === 'helicopter' && !this.isDead) {
+      const isFiring = this.heliMouseHeld || (this.vrGamepadInput?.fire ?? false);
+      if (isFiring && (!this.heliGunOverheated || this.cheatNoCooldown)) {
+        if (!this.cheatNoCooldown) this.heliGunHeat += dt;
+        this.tryShoot(); // cooldown system handles fire rate
+        if (this.heliGunHeat >= 5 && !this.cheatNoCooldown) {
+          this.heliGunOverheated = true;
+        }
+      } else {
+        // Cool down at same rate as heat-up (5s to full = 5s to empty)
+        this.heliGunHeat = Math.max(0, this.heliGunHeat - dt);
+        if (this.heliGunOverheated && this.heliGunHeat <= 0) {
+          this.heliGunOverheated = false;
+        }
+      }
+    } else {
+      // Not in helicopter — reset heat state
+      if (this.heliGunHeat > 0) {
+        this.heliGunHeat = 0;
+        this.heliGunOverheated = false;
+      }
+    }
+
     // Decrement nest teleport cooldown
     if (this.nestTeleportCooldown > 0) this.nestTeleportCooldown -= dt;
 
@@ -709,6 +924,7 @@ export class FPSController {
       this.respawnText.textContent = `Respawning in ${Math.ceil(Math.max(0, this.respawnTimer))}s`;
 
       // Kill cam: orbit camera around killer entity
+      // In VR, move the rig instead (headset stays head-tracked within it)
       if (this.killCamTargetId) {
         const killerEntity = this.sceneManager.entities.find(e => e.id === this.killCamTargetId);
         if (killerEntity && killerEntity.hp > 0) {
@@ -716,12 +932,20 @@ export class FPSController {
           const dist = 8;
           const height = 4;
           const targetPos = killerEntity.mesh.position;
-          this.camera.position.set(
-            targetPos.x + Math.cos(this.killCamAngle) * dist,
-            targetPos.y + height,
-            targetPos.z + Math.sin(this.killCamAngle) * dist,
-          );
-          this.camera.lookAt(targetPos.x, targetPos.y + 1.5, targetPos.z);
+          if (this.vrMode && this.vrCameraRig) {
+            this.vrCameraRig.position.set(
+              targetPos.x + Math.cos(this.killCamAngle) * dist,
+              targetPos.y + height - PLAYER_HEIGHT,
+              targetPos.z + Math.sin(this.killCamAngle) * dist,
+            );
+          } else {
+            this.camera.position.set(
+              targetPos.x + Math.cos(this.killCamAngle) * dist,
+              targetPos.y + height,
+              targetPos.z + Math.sin(this.killCamAngle) * dist,
+            );
+            this.camera.lookAt(targetPos.x, targetPos.y + 1.5, targetPos.z);
+          }
         }
       }
 
@@ -780,21 +1004,32 @@ export class FPSController {
 
         if (this.vehicleSeat === 'driver' && this.onServerMessage) {
           const isThrottling = this.keys.forward || this.keys.backward;
+          const isStrafing = this.vehicleType === 'helicopter' && (this.keys.left || this.keys.right);
           const hasVertical = this.vehicleType === 'helicopter' && (this.keys.jump || this.shiftHeld);
-          // Only send input when the player is actually pressing controls
-          if (isThrottling || hasVertical) {
-            const driveHeading = this.yaw + Math.PI;
+          // For helicopter: detect if camera yaw differs from heading (player wants to turn in place)
+          const driveHeading = this.yaw + Math.PI;
+          let wantsTurn = false;
+          if (this.vehicleType === 'helicopter') {
+            let yawDiff = driveHeading - this.vehicleHeading;
+            while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+            while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+            wantsTurn = Math.abs(yawDiff) > 0.05;
+          }
+          // Send input when pressing controls OR when the helicopter needs to turn
+          if (isThrottling || hasVertical || isStrafing || wantsTurn) {
             const msg: any = {
               type: 'vehicle_input',
               seq: this.inputSeq++,
               forward: this.keys.forward,
               backward: this.keys.backward,
-              cameraYaw: isThrottling ? driveHeading : this.vehicleHeading,
+              cameraYaw: (isThrottling || isStrafing || wantsTurn) ? driveHeading : this.vehicleHeading,
               dt,
             };
             if (this.vehicleType === 'helicopter') {
               msg.ascend = this.keys.jump;
               msg.descend = this.shiftHeld;
+              msg.strafeLeft = this.keys.left;
+              msg.strafeRight = this.keys.right;
             }
             this.onServerMessage(msg);
           }
@@ -817,6 +1052,176 @@ export class FPSController {
         this.camera.lookAt(vPos.x, vPos.y + 1.0, vPos.z);
         this.camera.fov = 75;
         this.camera.updateProjectionMatrix();
+
+        // Helicopter targeting: project a targeting circle and movable crosshair
+        if (this.vehicleType === 'helicopter') {
+          const heading = vehicleEntity.rotation.y;
+          const sinH = Math.sin(heading);
+          const cosH = Math.cos(heading);
+          // Center aim point: 15 units in front of heli, with pitch offset
+          const aimDist = 15;
+          const centerX = vPos.x - sinH * aimDist;
+          const centerZ = vPos.z - cosH * aimDist;
+          const centerY = vPos.y + 1.0 + Math.sin(this.heliAimPitch) * aimDist;
+
+          // Project center of targeting circle
+          const centerScreen = new THREE.Vector3(centerX, centerY, centerZ).project(this.camera);
+          // Project a point at the edge of the circle (radius 3) to get screen-space diameter
+          const edgeScreen = new THREE.Vector3(centerX + 3, centerY, centerZ).project(this.camera);
+          const hw = window.innerWidth / 2;
+          const hh = window.innerHeight / 2;
+          const centerSX = hw + centerScreen.x * hw;
+          const centerSY = hh - centerScreen.y * hh;
+          const edgeSX = hw + edgeScreen.x * hw;
+          const ringRadius = Math.abs(edgeSX - centerSX);
+          const ringDiameter = ringRadius * 2;
+
+          // Show/update the targeting ring
+          if (!this.heliTargetRing) {
+            this.heliTargetRing = document.createElement('div');
+            this.heliTargetRing.style.cssText = `
+              position:fixed; pointer-events:none; z-index:9;
+              border:2px solid rgba(80,160,255,0.4); border-radius:50%;
+              transform:translate(-50%,-50%);
+            `;
+            document.body.appendChild(this.heliTargetRing);
+          }
+          this.heliTargetRing.style.display = 'block';
+          this.heliTargetRing.style.left = `${centerSX}px`;
+          this.heliTargetRing.style.top = `${centerSY}px`;
+          this.heliTargetRing.style.width = `${ringDiameter}px`;
+          this.heliTargetRing.style.height = `${ringDiameter}px`;
+
+          // Position crosshair: aim offset is in local heli space (right/forward)
+          // Convert to world space using the heading
+          const aimWorldX = centerX + this.heliAimX * cosH - this.heliAimZ * sinH;
+          const aimWorldZ = centerZ - this.heliAimX * sinH - this.heliAimZ * cosH;
+          const aimScreen = new THREE.Vector3(aimWorldX, centerY, aimWorldZ).project(this.camera);
+
+          // Hide the default crosshair, use circular helicopter crosshair instead
+          const defaultCrosshair = document.getElementById('crosshair');
+          if (defaultCrosshair) defaultCrosshair.style.display = 'none';
+
+          // Create/update circular crosshair showing hit zone at ~200 distance
+          if (!this.heliCrosshair) {
+            this.heliCrosshair = document.createElement('div');
+            this.heliCrosshair.style.cssText = `
+              position:fixed; pointer-events:none; z-index:11;
+              border:2px solid rgba(255,100,100,0.7); border-radius:50%;
+              transform:translate(-50%,-50%);
+              box-shadow: 0 0 8px rgba(255,100,100,0.3);
+            `;
+            // Inner dot
+            const dot = document.createElement('div');
+            dot.style.cssText = `
+              position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+              width:4px; height:4px; background:rgba(255,100,100,0.9); border-radius:50%;
+            `;
+            this.heliCrosshair.appendChild(dot);
+            document.body.appendChild(this.heliCrosshair);
+          }
+          // Size the circle to represent spread at 200 units distance
+          const spreadAtDist = WEAPONS['heli_minigun'].spread + WEAPONS['heli_minigun'].spreadPerDist * 200;
+          const spreadWorldRadius = spreadAtDist * 200; // spread in world units at 200m
+          const spreadEdge = new THREE.Vector3(aimWorldX + spreadWorldRadius, centerY, aimWorldZ).project(this.camera);
+          const aimSX = hw + aimScreen.x * hw;
+          const aimSY = hh - aimScreen.y * hh;
+          const spreadEdgeSX = hw + spreadEdge.x * hw;
+          const maxRedRadius = ringRadius * 4; // never more than 4x the blue circle
+          const crosshairRadius = Math.min(maxRedRadius, Math.max(12, Math.abs(spreadEdgeSX - aimSX)));
+          const crosshairDiam = crosshairRadius * 2;
+          this.heliCrosshair.style.display = 'block';
+          this.heliCrosshair.style.left = `${aimSX}px`;
+          this.heliCrosshair.style.top = `${aimSY}px`;
+          this.heliCrosshair.style.width = `${crosshairDiam}px`;
+          this.heliCrosshair.style.height = `${crosshairDiam}px`;
+
+          // Heat bar under the circular crosshair
+          if (!this.heliHeatBar) {
+            this.heliHeatBar = document.createElement('div');
+            this.heliHeatBar.style.cssText = `
+              position:fixed; pointer-events:none; z-index:11;
+              width:60px; height:6px; background:rgba(0,0,0,0.5);
+              border-radius:3px; overflow:hidden; transform:translateX(-50%);
+            `;
+            const fill = document.createElement('div');
+            fill.style.cssText = 'height:100%;width:0%;border-radius:3px;transition:background 0.1s;';
+            fill.id = 'heli-heat-fill';
+            this.heliHeatBar.appendChild(fill);
+            document.body.appendChild(this.heliHeatBar);
+          }
+          const heatPct = (this.heliGunHeat / 5) * 100;
+          this.heliHeatBar.style.left = `${aimSX}px`;
+          this.heliHeatBar.style.top = `${aimSY + crosshairRadius + 10}px`;
+          this.heliHeatBar.style.display = heatPct > 1 ? 'block' : 'none';
+          const heatFill = document.getElementById('heli-heat-fill');
+          if (heatFill) {
+            heatFill.style.width = `${heatPct}%`;
+            heatFill.style.background = this.heliGunOverheated ? '#f44' : heatPct > 70 ? '#fa0' : '#4c4';
+          }
+
+          // Show turret muzzle flash
+          const turretFlash = vehicleEntity.mesh.getObjectByName('muzzleFlash');
+          if (turretFlash) {
+            if (this.muzzleFlashTimer > 0) {
+              turretFlash.visible = true;
+              this.muzzleFlashTimer -= dt;
+            } else {
+              turretFlash.visible = false;
+            }
+          }
+
+          // Rotate turret toward aim point
+          const turret = vehicleEntity.mesh.getObjectByName('turret') as THREE.Group | undefined;
+          if (turret) {
+            // Aim direction in helicopter-local space
+            const localAimX = this.heliAimX;
+            const localAimZ = this.heliAimZ;
+            const turretYaw = Math.atan2(localAimX, -(aimDist + localAimZ));
+            turret.rotation.y = turretYaw;
+            // Pitch the turret down toward the target
+            turret.rotation.x = this.heliAimPitch * 0.5;
+
+            // Spin barrel cluster when firing
+            const barrelSpin = turret.getObjectByName('barrelSpin');
+            if (barrelSpin) {
+              if (this.heliGunSpinSpeed > 0) {
+                barrelSpin.rotation.z += this.heliGunSpinSpeed * dt;
+              }
+              // Spin down gradually
+              this.heliGunSpinSpeed = Math.max(0, this.heliGunSpinSpeed - dt * 30);
+            }
+          }
+
+          // Make helicopter 85% transparent if the crosshair overlaps the heli mesh
+          const aimNDC = new THREE.Vector2(aimScreen.x, aimScreen.y);
+          this.raycaster.setFromCamera(aimNDC, this.camera);
+          const heliHits = this.raycaster.intersectObject(vehicleEntity.mesh, true);
+          const crosshairOverlapsHeli = heliHits.length > 0;
+
+          // Collect ALL unique materials from every mesh in the helicopter tree
+          const allMats = new Set<THREE.Material>();
+          vehicleEntity.mesh.traverse((obj: THREE.Object3D) => {
+            if (!(obj as THREE.Mesh).isMesh) return;
+            const m = obj as THREE.Mesh;
+            const mats = Array.isArray(m.material) ? m.material : [m.material];
+            for (const mat of mats) allMats.add(mat);
+          });
+
+          for (const mat of allMats) {
+            // Skip the invisible hitbox material
+            if (!mat.visible) continue;
+            if (mat.userData.heliOrigOpacity === undefined) {
+              mat.userData.heliOrigOpacity = mat.opacity;
+              mat.userData.heliOrigTransparent = mat.transparent;
+            }
+            mat.transparent = true;
+            mat.opacity = crosshairOverlapsHeli
+              ? mat.userData.heliOrigOpacity * 0.15
+              : mat.userData.heliOrigOpacity;
+            mat.needsUpdate = true;
+          }
+        }
 
         // Move player position to vehicle for HUD/sync purposes
         this.position.set(vPos.x, vPos.y + 1.5, vPos.z);
@@ -855,17 +1260,23 @@ export class FPSController {
     }
 
     // Normal movement
+    // In VR, movement direction comes from the camera rig yaw only (gamepad-controlled).
+    // Head tracking does NOT affect movement direction.
+    let effectiveYaw = this.yaw;
+    if (this.vrMode && this.vrCameraRig) {
+      effectiveYaw = this.vrCameraRig.rotation.y;
+    }
     const input: InputState = {
       forward: this.keys.forward, backward: this.keys.backward,
       left: this.keys.left, right: this.keys.right,
-      jump: this.keys.jump, yaw: this.yaw, pitch: this.pitch, dt,
+      jump: this.keys.jump, yaw: effectiveYaw, pitch: this.pitch, dt,
     };
 
-    const effectiveGroundY = onPlatform ? (platformNestTerrainY + PLAT_H) : currentTerrainY;
-    const feetY = this.position.y - PLAYER_HEIGHT - effectiveGroundY;
-    const prevPos = { x: this.position.x, y: feetY, z: this.position.z };
+    // Use absolute feet position + groundY param (matches server approach)
+    const groundY = onPlatform ? (platformNestTerrainY + PLAT_H) : currentTerrainY;
+    const feetPos = { x: this.position.x, y: this.position.y - PLAYER_HEIGHT, z: this.position.z };
     const mc = this.sceneManager.mapConfig;
-    const result = applyMovement(prevPos, this.velocity, input, dt, { halfW: mc.width / 2, halfD: mc.depth / 2 });
+    const result = applyMovement(feetPos, this.velocity, input, dt, { halfW: mc.width / 2, halfD: mc.depth / 2 }, groundY);
 
     let newX = result.position.x;
     let newZ = result.position.z;
@@ -881,11 +1292,18 @@ export class FPSController {
       }
     }
 
+    // Snap to terrain at new position (handles walking uphill/downhill)
     const newTerrainY = this.sceneManager.terrainHeight(newX, newZ);
-    const newEffectiveGround = onPlatform ? (platformNestTerrainY + PLAT_H) : newTerrainY;
-    let newY = result.position.y + PLAYER_HEIGHT + newEffectiveGround;
-    this.velocity = result.velocity;
-    this.onGround = result.onGround;
+    const platformOffset = onPlatform ? PLAT_H : 0;
+    let newFeetY = result.position.y;
+    let vy = result.velocity.y;
+    if (result.onGround || newFeetY < newTerrainY) {
+      newFeetY = newTerrainY + platformOffset;
+      if (vy < 0) vy = 0;
+    }
+    let newY = newFeetY + PLAYER_HEIGHT;
+    this.velocity = { ...result.velocity, y: vy };
+    this.onGround = result.onGround || newFeetY <= newTerrainY + platformOffset + 0.01;
 
     this.position.set(newX, newY, newZ);
 
@@ -895,15 +1313,23 @@ export class FPSController {
       this.playerEntity.maxHp = this.maxHp;
     }
 
-    this.camera.position.copy(this.position);
-    const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');
-    this.camera.quaternion.setFromEuler(euler);
+    if (this.vrMode && this.vrCameraRig) {
+      // VR: position the camera rig at the player's eye level.
+      // The XR headset adds its own offset on top, so we place the rig at game eye height.
+      const groundY = this.sceneManager.terrainHeight(this.position.x, this.position.z);
+      this.vrCameraRig.position.set(this.position.x, groundY + PLAYER_HEIGHT, this.position.z);
+      // Don't touch camera rotation — headset controls it
+    } else {
+      this.camera.position.copy(this.position);
+      const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');
+      this.camera.quaternion.setFromEuler(euler);
+    }
 
-    // Send input to server (online mode)
+    // Send input to server (online mode) — use effectiveYaw so server moves in the same direction
     if (this.onInput) {
       this.onInput(
         { ...this.keys },
-        this.yaw, this.pitch, dt,
+        effectiveYaw, this.pitch, dt,
       );
     }
 
@@ -948,9 +1374,9 @@ export class FPSController {
     this.updateInteractPrompt();
   }
 
-  /** Render the weapon viewmodel on top of the main scene */
+  /** Render the weapon viewmodel on top of the main scene (skipped in VR — weapon is in-scene) */
   renderWeaponView(renderer: THREE.WebGLRenderer): void {
-    if (!this.enabled || this.isDead || !this.currentModel) return;
+    if (!this.enabled || this.isDead || !this.currentModel || this.vrMode) return;
     renderer.autoClear = false;
     renderer.clearDepth();
     renderer.render(this.weaponScene, this.weaponCamera);
@@ -1003,7 +1429,7 @@ export class FPSController {
       this.heroSelectionContainer.remove();
       this.heroSelectionContainer = null;
     }
-    if (!this.baseUpgraded) return;
+    if (!this.hasHeroAcademy) return;
 
     const container = document.createElement('div');
     container.style.cssText = `
@@ -1056,7 +1482,7 @@ export class FPSController {
     this.respawnOverlay.style.display = 'none';
     SoundManager.instance().playerRespawn();
     const spawn = this.sceneManager.mapConfig.teamSpawns[this.localTeamId];
-    this.position.set(spawn.x, GROUND_Y + PLAYER_HEIGHT, spawn.z);
+    this.position.set(spawn.x, this.sceneManager.terrainHeight(spawn.x, spawn.z) + PLAYER_HEIGHT, spawn.z);
     this.velocity = { x: 0, y: 0, z: 0 };
     if (this.playerEntity) this.playerEntity.hp = this.hp;
     // Reset to default weapon (pistol only)
@@ -1069,7 +1495,11 @@ export class FPSController {
 
   private tryShoot(): void {
     if (this.heroAbilityActive && this.heroType !== 'tank') return; // weapons disabled during non-tank hero ability
-    const weapon = this.getActiveWeapon();
+    if (this.heliGunOverheated && !this.cheatNoCooldown) return; // minigun overheated
+    // Helicopter uses built-in minigun instead of equipped weapon
+    const weapon = (this.inVehicle && this.vehicleType === 'helicopter')
+      ? WEAPONS['heli_minigun']
+      : this.getActiveWeapon();
     const currentCd = this.weaponCooldowns.get(weapon.id) ?? 0;
     if (currentCd > 0) return;
 
@@ -1080,12 +1510,18 @@ export class FPSController {
     }
     this.recoilAmount = 1;
 
+    // Spin up the gatling barrels when firing from helicopter
+    if (weapon.id === 'heli_minigun') {
+      this.heliGunSpinSpeed = 60; // radians/sec
+    }
+
     // Track shot for accuracy stats
     this.onServerMessage?.({ type: 'fps_shoot', weaponId: weapon.id, origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: 0 } });
 
     // Weapon-specific sound
     const sm = SoundManager.instance();
-    if (weapon.id === 'pistol') sm.shootPistol();
+    if (weapon.id === 'heli_minigun') sm.shootPistol(); // rapid light sound
+    else if (weapon.id === 'pistol') sm.shootPistol();
     else if (weapon.id === 'rifle') sm.shootRifle();
     else if (weapon.id === 'shotgun') sm.shootShotgun();
     else if (weapon.id === 'rocket_launcher') sm.shootShotgun(); // heavy boom
@@ -1093,18 +1529,66 @@ export class FPSController {
     // Rocket launcher: spawn a traveling projectile instead of hitscan
     if (weapon.id === 'rocket_launcher') {
       this.fireRocket();
+      // Broadcast rocket to other players
+      let rocketOrigin: THREE.Vector3;
+      let rocketForward: THREE.Vector3;
+      if (this.vrMode) {
+        rocketOrigin = this.position.clone();
+        rocketForward = this.getVRAimDirection();
+      } else {
+        rocketOrigin = this.position.clone();
+        rocketForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      }
+      this.onServerMessage?.({
+        type: 'rocket_fired',
+        origin: { x: rocketOrigin.x, y: rocketOrigin.y, z: rocketOrigin.z },
+        direction: { x: rocketForward.x, y: rocketForward.y, z: rocketForward.z },
+      } as any);
       return;
     }
 
     // Muzzle flash
-    if (this.muzzleFlash) {
+    if (this.inVehicle && this.vehicleType === 'helicopter') {
+      // Helicopter: turret muzzle flash is handled in the targeting update section
+      this.muzzleFlashTimer = 0.04;
+    } else if (this.muzzleFlash) {
       this.muzzleFlash.visible = true;
       this.muzzleFlashTimer = 0.06;
     }
 
-    const origin = this.position.clone();
-    const forward = new THREE.Vector3(0, 0, -1);
-    forward.applyQuaternion(this.camera.quaternion);
+    // In helicopter, shoot toward the red dot (crosshair aim point)
+    let origin: THREE.Vector3;
+    let forward: THREE.Vector3;
+    if (this.inVehicle && this.vehicleType === 'helicopter' && this.vehicleId) {
+      const vehicleEntity = this.sceneManager.entities.find(e => e.id === this.vehicleId);
+      if (vehicleEntity) {
+        const vPos = vehicleEntity.mesh.position;
+        const heading = vehicleEntity.rotation.y;
+        const sinH = Math.sin(heading);
+        const cosH = Math.cos(heading);
+        // Compute the world-space aim point (same math as the crosshair dot)
+        const aimDist = 15;
+        const centerX = vPos.x - sinH * aimDist;
+        const centerZ = vPos.z - cosH * aimDist;
+        const centerY = vPos.y + 1.0 + Math.sin(this.heliAimPitch) * aimDist;
+        const aimWorldX = centerX + this.heliAimX * cosH - this.heliAimZ * sinH;
+        const aimWorldZ = centerZ - this.heliAimX * sinH - this.heliAimZ * cosH;
+        const aimPoint = new THREE.Vector3(aimWorldX, centerY, aimWorldZ);
+        // Raycast from camera through the aim point (guarantees bullets hit where the dot is)
+        origin = this.camera.position.clone();
+        forward = aimPoint.sub(origin).normalize();
+      } else {
+        origin = this.camera.position.clone();
+        forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      }
+    } else if (this.vrMode) {
+      // VR: use gamepad aim direction (rig yaw + aim pitch, not head tracking)
+      origin = this.position.clone();
+      forward = this.getVRAimDirection();
+    } else {
+      origin = this.position.clone();
+      forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    }
 
     for (let i = 0; i < weapon.pellets; i++) {
       const dir = forward.clone();
@@ -1128,6 +1612,7 @@ export class FPSController {
       // Add game entities as targets
       for (const ent of this.sceneManager.entities) {
         if (ent.id === this.playerEntity?.id) continue;
+        if (this.inVehicle && ent.id === this.vehicleId) continue; // don't shoot own vehicle
         if (ent.entityType === 'resource_node') continue;
         if (ent.hp <= 0) continue;
         targetMeshes.push(ent.mesh);
@@ -1141,6 +1626,27 @@ export class FPSController {
       }
 
       const intersects = this.raycaster.intersectObjects(targetMeshes, true);
+
+      // Helicopter minigun miss: trace ray to ground plane and spawn debris there
+      if (intersects.length === 0 && weapon.id === 'heli_minigun' && forward.y < -0.01) {
+        // Ray-ground intersection: find t where origin.y + forward.y * t = terrainY
+        // Iterate to converge on terrain height
+        let t = -origin.y / forward.y; // initial estimate assuming flat ground at y=0
+        for (let i = 0; i < 3; i++) {
+          const gx = origin.x + forward.x * t;
+          const gz = origin.z + forward.z * t;
+          const terrainY = this.sceneManager.terrainHeight(gx, gz);
+          t = (terrainY - origin.y) / forward.y;
+          if (t < 0) break; // ray points away from ground
+        }
+        if (t > 0 && t < weapon.range) {
+          const groundHit = origin.clone().add(forward.clone().multiplyScalar(t));
+          groundHit.y = this.sceneManager.terrainHeight(groundHit.x, groundHit.z);
+          this.spawnImpactDebris(groundHit, 'ground');
+          this.onServerMessage?.({ type: 'heli_impact', x: groundHit.x, y: groundHit.y, z: groundHit.z, kind: 'ground' } as any);
+        }
+      }
+
       if (intersects.length > 0) {
         const hit = intersects[0];
 
@@ -1154,6 +1660,10 @@ export class FPSController {
         if (hitObstacle) {
           this.showHitEffect(hit.point);
           SoundManager.instance().bulletImpact(hit.point.x, hit.point.z);
+          if (weapon.id === 'heli_minigun') {
+            this.spawnImpactDebris(hit.point, 'ground');
+            this.onServerMessage?.({ type: 'heli_impact', x: hit.point.x, y: hit.point.y, z: hit.point.z, kind: 'ground' } as any);
+          }
           break; // bullet stopped by obstacle
         }
 
@@ -1167,7 +1677,7 @@ export class FPSController {
         }
         if (hitEntity) {
           // Standard guns do 1 damage to buildings (rocket launcher is handled separately)
-          const BUILDING_TYPES = new Set(['main_base', 'tower', 'barracks', 'armory', 'player_tower', 'turret']);
+          const BUILDING_TYPES = new Set(['main_base', 'tower', 'barracks', 'armory', 'player_tower', 'turret', 'farm', 'sniper_nest', 'garage', 'hero_academy']);
           const isBuilding = BUILDING_TYPES.has(hitEntity.entityType);
           const actualDamage = isBuilding ? 1 : weapon.damage;
           hitEntity.hp -= actualDamage;
@@ -1195,6 +1705,13 @@ export class FPSController {
           // Knockback + blood for non-building targets
           if (!isBuilding) {
             this.applyKnockbackAndBlood(hitEntity.mesh, hit.point, dir, actualDamage);
+          }
+
+          // Helicopter minigun: spawn debris and broadcast to all players
+          if (weapon.id === 'heli_minigun') {
+            const kind = isBuilding ? 'building' : 'blood';
+            this.spawnImpactDebris(hit.point, kind);
+            this.onServerMessage?.({ type: 'heli_impact', x: hit.point.x, y: hit.point.y, z: hit.point.z, kind } as any);
           }
 
           // Notify server in online mode
@@ -1366,6 +1883,67 @@ export class FPSController {
     }
   }
 
+  /** Spawn debris particles at an impact point. type: 'ground'|'building'|'blood' */
+  spawnImpactDebris(point: THREE.Vector3, type: 'ground' | 'building' | 'blood'): void {
+    const scene = this.sceneManager.scene;
+    const count = type === 'blood' ? 6 : 8;
+    const color = type === 'ground' ? 0x886644 : type === 'building' ? 0x999999 : 0xcc0000;
+    const geo = type === 'blood'
+      ? new THREE.SphereGeometry(0.06, 4, 4)
+      : new THREE.BoxGeometry(0.12, 0.12, 0.12);
+
+    for (let i = 0; i < count; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: type === 'ground'
+          ? (0x664422 + Math.floor(Math.random() * 0x222222))
+          : color,
+      });
+      const p = new THREE.Mesh(geo, mat);
+      p.position.copy(point);
+      p.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+      scene.add(p);
+
+      // Debris flies HIGH — velocity scaled for dramatic effect
+      const spread = type === 'blood' ? 2 : 3;
+      const upForce = type === 'blood' ? 6 : 10 + Math.random() * 8;
+      const vel = {
+        x: (Math.random() - 0.5) * spread,
+        y: upForce,
+        z: (Math.random() - 0.5) * spread,
+      };
+      let elapsed = 0;
+      const lifetime = 1.2 + Math.random() * 0.5;
+      const anim = () => {
+        const dt = 0.016;
+        elapsed += dt;
+        vel.y -= 18 * dt; // strong gravity
+        p.position.x += vel.x * dt;
+        p.position.y += vel.y * dt;
+        p.position.z += vel.z * dt;
+        p.rotation.x += 5 * dt;
+        p.rotation.y += 3 * dt;
+        // Fade out near end of life
+        const fade = elapsed > lifetime * 0.7 ? 1 - (elapsed - lifetime * 0.7) / (lifetime * 0.3) : 1;
+        p.scale.setScalar(Math.max(0, fade));
+        // Stop at ground
+        const groundY = this.sceneManager.terrainHeight(p.position.x, p.position.z);
+        if (p.position.y < groundY) {
+          p.position.y = groundY;
+          vel.y = -vel.y * 0.3; // bounce
+          vel.x *= 0.5;
+          vel.z *= 0.5;
+        }
+        if (elapsed > lifetime) {
+          scene.remove(p);
+          mat.dispose();
+          return;
+        }
+        requestAnimationFrame(anim);
+      };
+      requestAnimationFrame(anim);
+    }
+  }
+
   // ===================== Rocket Projectile =====================
 
   private fireRocket(): void {
@@ -1389,8 +1967,8 @@ export class FPSController {
       new THREE.ConeGeometry(0.06, 0.3, 5),
       new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.8 }),
     );
-    flame.rotation.x = -Math.PI / 2;
-    flame.position.z = 0.3;
+    flame.rotation.x = Math.PI / 2;
+    flame.position.z = -0.3;
     rocketGroup.add(flame);
 
     rocketGroup.position.copy(origin);
@@ -1469,6 +2047,82 @@ export class FPSController {
         this.spawnRocketExplosion(rocketGroup.position);
         scene.remove(rocketGroup);
         return;
+      }
+
+      requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  }
+
+  /** Spawn a visual-only rocket from another player (no damage, just the projectile + explosion) */
+  spawnRemoteRocket(origin: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }, shooterId?: string): void {
+    const scene = this.sceneManager.scene;
+    const dir = new THREE.Vector3(direction.x, direction.y, direction.z).normalize();
+
+    const rocketGroup = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.06, 0.5, 6),
+      new THREE.MeshLambertMaterial({ color: 0x556633 }),
+    );
+    body.rotation.x = Math.PI / 2;
+    rocketGroup.add(body);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.06, 0.3, 5),
+      new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.8 }),
+    );
+    flame.rotation.x = Math.PI / 2;
+    flame.position.z = -0.3;
+    rocketGroup.add(flame);
+
+    rocketGroup.position.set(origin.x, origin.y, origin.z);
+    rocketGroup.lookAt(origin.x + dir.x, origin.y + dir.y, origin.z + dir.z);
+    scene.add(rocketGroup);
+
+    const ROCKET_SPEED = 20;
+    const MAX_DIST = 75;
+    let traveled = 0;
+
+    const animate = () => {
+      const step = ROCKET_SPEED * 0.016;
+      rocketGroup.position.add(dir.clone().multiplyScalar(step));
+      traveled += step;
+      (flame.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.random() * 0.5;
+
+      // Hit terrain
+      const rp = rocketGroup.position;
+      const terrainY = this.sceneManager.terrainHeight(rp.x, rp.z);
+      if (rp.y <= terrainY + 0.2 || traveled > MAX_DIST) {
+        this.spawnRocketExplosion(rocketGroup.position);
+        scene.remove(rocketGroup);
+        return;
+      }
+
+      // Hit obstacle
+      for (const box of this.obstacleBoxes) {
+        if (Math.abs(rp.x - box.center.x) < box.halfSize.x + 0.3 &&
+            Math.abs(rp.y - box.center.y) < box.halfSize.y + 0.3 &&
+            Math.abs(rp.z - box.center.z) < box.halfSize.z + 0.3) {
+          this.spawnRocketExplosion(rocketGroup.position);
+          scene.remove(rocketGroup);
+          return;
+        }
+      }
+
+      // Hit entity (skip the shooter)
+      for (const ent of this.sceneManager.entities) {
+        if (ent.hp <= 0) continue;
+        if (ent.id === shooterId) continue;
+        const dx = ent.mesh.position.x - rp.x;
+        const dz = ent.mesh.position.z - rp.z;
+        const distXZ = Math.sqrt(dx * dx + dz * dz);
+        const isMobile = ['worker', 'fighter', 'fps_player', 'foot_soldier', 'archer'].includes(ent.entityType);
+        const hitRadius = isMobile ? 0.8 : 1.5;
+        const hitHeight = isMobile ? 1.8 : 5;
+        if (distXZ < hitRadius && rp.y >= ent.mesh.position.y && rp.y <= ent.mesh.position.y + hitHeight) {
+          this.spawnRocketExplosion(rocketGroup.position);
+          scene.remove(rocketGroup);
+          return;
+        }
       }
 
       requestAnimationFrame(animate);
@@ -1797,9 +2451,11 @@ export class FPSController {
     }
     // Hide weapon viewmodel
     if (this.currentModel) this.currentModel.visible = false;
-    // Hide crosshair
+    // Hide crosshair for jeep driver (no gun), keep it for helicopter pilot and jeep gunner
     const crosshair = document.getElementById('crosshair');
-    if (crosshair) crosshair.style.display = 'none';
+    if (crosshair) {
+      crosshair.style.display = (this.vehicleType === 'jeep' && seat === 'driver') ? 'none' : 'block';
+    }
   }
 
   /** Called when server confirms vehicle exit */
@@ -1810,9 +2466,54 @@ export class FPSController {
     this.vehicleType = null;
     // Restore weapon viewmodel
     if (this.currentModel) this.currentModel.visible = true;
-    // Restore crosshair
+    // Restore crosshair to center
     const crosshair = document.getElementById('crosshair');
-    if (crosshair) crosshair.style.display = 'block';
+    if (crosshair) {
+      crosshair.style.display = 'block';
+      crosshair.style.left = '50%';
+      crosshair.style.top = '50%';
+    }
+    // Clean up helicopter targeting
+    this.heliAimX = 0;
+    this.heliAimZ = 0;
+    this.heliAimPitch = 0;
+    this.heliGunSpinSpeed = 0;
+    if (this.heliTargetRing) {
+      this.heliTargetRing.remove();
+      this.heliTargetRing = null;
+    }
+    if (this.heliCrosshair) {
+      this.heliCrosshair.remove();
+      this.heliCrosshair = null;
+    }
+    if (this.heliHeatBar) {
+      this.heliHeatBar.remove();
+      this.heliHeatBar = null;
+    }
+    this.heliGunHeat = 0;
+    this.heliGunOverheated = false;
+    // Restore helicopter mesh opacity
+    if (this.vehicleId) {
+      const veh = this.sceneManager.entities.find(e => e.id === this.vehicleId);
+      if (veh) {
+        const restoreMats = new Set<THREE.Material>();
+        veh.mesh.traverse((obj: THREE.Object3D) => {
+          if (!(obj as THREE.Mesh).isMesh) return;
+          const m = obj as THREE.Mesh;
+          const mats = Array.isArray(m.material) ? m.material : [m.material];
+          for (const mat of mats) restoreMats.add(mat);
+        });
+        for (const mat of restoreMats) {
+          if (mat.userData.heliOrigOpacity !== undefined) {
+            mat.opacity = mat.userData.heliOrigOpacity;
+            mat.transparent = mat.userData.heliOrigTransparent ?? false;
+            mat.needsUpdate = true;
+            delete mat.userData.heliOrigOpacity;
+            delete mat.userData.heliOrigTransparent;
+          }
+        }
+      }
+    }
     // Restore first-person FOV
     this.camera.fov = this.defaultFOV;
     this.camera.updateProjectionMatrix();
@@ -2017,6 +2718,27 @@ export class FPSController {
         }
       }
     }
+
+    // Hero level badges
+    const badges = document.getElementById('fps-level-badges');
+    if (badges) {
+      if (this.heroHpLevel > 0 || this.heroDmgLevel > 0 || this.heroRegenActive) {
+        badges.style.display = '';
+        let html = '';
+        if (this.heroHpLevel > 0) {
+          html += `<div style="background:rgba(0,80,0,0.7);border:1px solid #4c4;border-radius:4px;padding:2px 6px;margin-bottom:3px;font-size:11px;color:#4c4;">HP Lv${this.heroHpLevel}</div>`;
+        }
+        if (this.heroDmgLevel > 0) {
+          html += `<div style="background:rgba(80,60,0,0.7);border:1px solid #cc4;border-radius:4px;padding:2px 6px;margin-bottom:3px;font-size:11px;color:#cc4;">DMG Lv${this.heroDmgLevel}</div>`;
+        }
+        if (this.heroRegenActive) {
+          html += `<div style="background:rgba(0,40,80,0.7);border:1px solid #48a;border-radius:4px;padding:2px 6px;font-size:11px;color:#48a;">REGEN</div>`;
+        }
+        badges.innerHTML = html;
+      } else {
+        badges.style.display = 'none';
+      }
+    }
   }
 
   private buildHud(): HTMLDivElement {
@@ -2037,6 +2759,16 @@ export class FPSController {
       z-index: 12; pointer-events: none; font-family: system-ui, sans-serif;
     `;
     document.body.appendChild(teamBadge);
+
+    // Hero level badges (left of HUD)
+    const levelBadges = document.createElement('div');
+    levelBadges.id = 'fps-level-badges';
+    levelBadges.style.cssText = `
+      position: fixed; bottom: 20px; left: calc(50% - 210px);
+      display: none; z-index: 12; pointer-events: none;
+      font-family: system-ui, sans-serif; text-align: center;
+    `;
+    document.body.appendChild(levelBadges);
 
     const hpRow = document.createElement('div');
     hpRow.style.cssText = 'margin-bottom: 8px;';

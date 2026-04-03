@@ -11,7 +11,7 @@ import {
 } from './MeshFactory.js';
 import { getTerrainHeight, createTerrainHeightFn } from './Terrain.js';
 
-export type EntityType = 'main_base' | 'tower' | 'barracks' | 'armory' | 'player_tower' | 'turret' | 'resource_node' | 'worker' | 'fighter' | 'fps_player' | 'foot_soldier' | 'archer' | 'sniper_nest' | 'farm' | 'garage' | 'jeep';
+export type EntityType = 'main_base' | 'tower' | 'barracks' | 'armory' | 'player_tower' | 'turret' | 'resource_node' | 'worker' | 'fighter' | 'fps_player' | 'foot_soldier' | 'archer' | 'sniper_nest' | 'farm' | 'garage' | 'jeep' | 'helicopter' | 'hero_academy';
 
 export interface SceneEntity {
   id: string;
@@ -29,6 +29,11 @@ export interface SceneEntity {
   rotation: { x: number; y: number; z: number };
   /** Building level (for upgrade detection) */
   level?: number;
+  /** Hero state (synced from snapshot for fps_player entities) */
+  heroType?: string;
+  heroAbilityActive?: boolean;
+  shieldHp?: number;
+  playerName?: string;
 }
 
 export class SceneManager {
@@ -55,13 +60,17 @@ export class SceneManager {
 
   private nextId = 0;
 
-  constructor(canvas: HTMLCanvasElement, skipEntities = false, mapConfig?: MapConfig) {
+  constructor(canvas: HTMLCanvasElement, skipEntities = false, mapConfig?: MapConfig, externalRenderer?: THREE.WebGLRenderer) {
     this.mapConfig = mapConfig ?? MEADOW_MAP;
     this.terrainHeight = createTerrainHeightFn(this.mapConfig);
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x87ceeb); // sky blue
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    if (externalRenderer) {
+      this.renderer = externalRenderer;
+    } else {
+      this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    }
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(window.devicePixelRatio);
 
@@ -346,6 +355,84 @@ export class SceneManager {
       });
     }
 
+    // ===================== Tunnel Geometry =====================
+    if (mc.tunnels) {
+      for (const tunnel of mc.tunnels) {
+        const tunnelMat = new THREE.MeshLambertMaterial({ color: 0x332820, side: THREE.DoubleSide });
+        const entranceMat = new THREE.MeshLambertMaterial({ color: 0x221810 });
+
+        for (const region of tunnel.regions) {
+          const w = region.max.x - region.min.x;
+          const h = tunnel.ceilingHeight;
+          const d = region.max.z - region.min.z;
+          const cx = (region.min.x + region.max.x) / 2;
+          const cz = (region.min.z + region.max.z) / 2;
+
+          // Floor
+          const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, d),
+            tunnelMat,
+          );
+          floor.rotation.x = -Math.PI / 2;
+          floor.position.set(cx, tunnel.floorY, cz);
+          this.scene.add(floor);
+
+          // Ceiling
+          const ceiling = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, d),
+            tunnelMat,
+          );
+          ceiling.rotation.x = Math.PI / 2;
+          ceiling.position.set(cx, tunnel.floorY + h, cz);
+          this.scene.add(ceiling);
+
+          // North wall (min Z side)
+          const northWall = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, h),
+            tunnelMat,
+          );
+          northWall.position.set(cx, tunnel.floorY + h / 2, region.min.z);
+          this.scene.add(northWall);
+
+          // South wall (max Z side)
+          const southWall = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, h),
+            tunnelMat,
+          );
+          southWall.position.set(cx, tunnel.floorY + h / 2, region.max.z);
+          southWall.rotation.y = Math.PI;
+          this.scene.add(southWall);
+
+          // Dim light inside the tunnel
+          const tunnelLight = new THREE.PointLight(0xff6633, 0.4, w * 0.7);
+          tunnelLight.position.set(cx, tunnel.floorY + h - 0.5, cz);
+          this.scene.add(tunnelLight);
+        }
+
+        // Entrance arches (visible from surface)
+        for (const portal of tunnel.portals) {
+          // Only render surface-entry portals (targetLayer > 0)
+          if (portal.targetLayer === 0) continue;
+          const archW = 4;
+          const archH = 4;
+          const archD = 1;
+          const portalTerrainY = th(portal.position.x, portal.position.z);
+
+          const arch = new THREE.Mesh(
+            new THREE.BoxGeometry(archW, archH, archD),
+            entranceMat,
+          );
+          arch.position.set(portal.position.x, portalTerrainY + archH / 2, portal.position.z);
+          this.scene.add(arch);
+
+          // Glowing entrance indicator
+          const glowLight = new THREE.PointLight(0xff4400, 0.6, 8);
+          glowLight.position.set(portal.position.x, portalTerrainY + 1.5, portal.position.z);
+          this.scene.add(glowLight);
+        }
+      }
+    }
+
     if (skipEntities) return; // Online mode: server owns all game entities
 
     // Pre-placed buildings
@@ -478,5 +565,32 @@ export class SceneManager {
         this.dyingEntities.splice(i, 1);
       }
     }
+  }
+
+  destroy(): void {
+    // Dispose all entity meshes
+    for (const entity of this.entities) {
+      this.scene.remove(entity.mesh);
+      entity.mesh.geometry?.dispose();
+      const mat = entity.mesh.material;
+      if (Array.isArray(mat)) mat.forEach(m => m.dispose());
+      else if (mat) (mat as THREE.Material).dispose();
+    }
+    this.entities.length = 0;
+
+    // Dispose all scene children (terrain, lights, obstacles, etc.)
+    const toRemove = [...this.scene.children];
+    for (const child of toRemove) {
+      this.scene.remove(child);
+      child.traverse((obj) => {
+        if ((obj as THREE.Mesh).geometry) (obj as THREE.Mesh).geometry.dispose();
+        const m = (obj as THREE.Mesh).material;
+        if (m) {
+          if (Array.isArray(m)) m.forEach(mat => mat.dispose());
+          else (m as THREE.Material).dispose();
+        }
+      });
+    }
+    // Note: don't dispose renderer — it's shared with the game
   }
 }

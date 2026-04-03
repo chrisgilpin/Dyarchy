@@ -5,8 +5,6 @@ import type { SceneEntity } from '../renderer/SceneManager.js';
 // Vision ranges by entity type
 const VISION_RANGES: Record<string, number> = {
   main_base: 20,
-  tower: 18,
-  player_tower: 16,
   barracks: 12,
   armory: 12,
   worker: 14,
@@ -16,6 +14,10 @@ const VISION_RANGES: Record<string, number> = {
   archer: 25,
   farm: 10,
 };
+
+// Tower/turret vision = their combat range (25 base, scales with level)
+const TOWER_BASE_RANGE = 25;
+const TOWER_TYPES = new Set(['tower', 'player_tower', 'turret']);
 
 const DEFAULT_VISION = 10;
 
@@ -49,10 +51,12 @@ export class FogOfWar {
 
   teamId: 1 | 2;
   enabled = true;
+  private terrainHeightFn?: (x: number, z: number) => number;
 
   constructor(scene: THREE.Scene, teamId: 1 | 2 = 1, mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH, terrainHeightFn?: (x: number, z: number) => number) {
     this.scene = scene;
     this.teamId = teamId;
+    this.terrainHeightFn = terrainHeightFn;
     this.mapWidth = mapWidth;
     this.mapDepth = mapDepth;
     // Scale fog resolution proportionally to map size
@@ -105,8 +109,8 @@ export class FogOfWar {
     scene.add(this.mesh);
   }
 
-  /** Update fog based on friendly entity positions */
-  update(entities: SceneEntity[]): void {
+  /** Update fog based on friendly entity positions (only entities on the given layer) */
+  update(entities: SceneEntity[], localLayerId: number = 0): void {
     if (!this.enabled) {
       this.mesh.visible = false;
       return;
@@ -121,9 +125,28 @@ export class FogOfWar {
       if (entity.teamId !== this.teamId) continue;
       if (entity.hp <= 0) continue;
       if (entity.entityType === 'resource_node') continue;
+      // Skip entities on different layers (hidden by snapshot renderer)
+      if (!entity.mesh.visible) continue;
 
-      const range = VISION_RANGES[entity.entityType] ?? DEFAULT_VISION;
+      let range: number;
+      if (TOWER_TYPES.has(entity.entityType)) {
+        // Tower vision = combat range, scales with level
+        const level = entity.level ?? 1;
+        let levelMult = 1;
+        if (level >= 3) levelMult = 2.0;
+        else if (level >= 2) levelMult = 1.2;
+        range = TOWER_BASE_RANGE * levelMult;
+      } else {
+        range = VISION_RANGES[entity.entityType] ?? DEFAULT_VISION;
+      }
       const pos = entity.mesh.position;
+
+      // Elevation bonus: units on higher terrain see further (up to +50%)
+      if (this.terrainHeightFn) {
+        const elevation = this.terrainHeightFn(pos.x, pos.z);
+        const bonus = Math.min(0.5, elevation / 30);
+        range *= (1 + bonus);
+      }
 
       this.revealCircle(pos.x, pos.z, range);
     }
