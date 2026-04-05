@@ -1,9 +1,14 @@
 import * as THREE from 'three';
 
+/** Low-poly flat-shaded material — the core of the Windlands aesthetic */
+function mat(props: THREE.MeshPhongMaterialParameters): THREE.MeshPhongMaterial {
+  return new THREE.MeshPhongMaterial({ flatShading: true, shininess: 0, ...props });
+}
+
 /** Team colors: blue team vs red team, with lighter/darker variants */
 const TEAM = {
-  1: { primary: 0x2255bb, light: 0x4488dd, dark: 0x113388 },
-  2: { primary: 0xbb2222, light: 0xdd4444, dark: 0x881111 },
+  1: { primary: 0x3366cc, light: 0x5599ee, dark: 0x224488 },
+  2: { primary: 0xcc3333, light: 0xee5555, dark: 0x991111 },
 } as const;
 
 /** Add eyes (and hidden X-eyes for death) to a unit at the given head position.
@@ -12,19 +17,19 @@ function addEyes(group: THREE.Group, eyeY: number, faceZ: number, spacing = 0.08
   const eyeGroup = new THREE.Group();
   eyeGroup.name = 'eyes_alive';
   for (const xOff of [-spacing, spacing]) {
-    // White of eye
+    // Round eye
     const white = new THREE.Mesh(
-      new THREE.BoxGeometry(eyeSize * 1.3, eyeSize * 1.3, 0.01),
-      new THREE.MeshLambertMaterial({ color: 0xffffff }),
+      new THREE.SphereGeometry(eyeSize * 0.7, 5, 5),
+      mat({ color: 0xffffff }),
     );
     white.position.set(xOff, eyeY, faceZ + 0.005);
     eyeGroup.add(white);
     // Pupil
     const pupil = new THREE.Mesh(
-      new THREE.BoxGeometry(eyeSize * 0.6, eyeSize * 0.6, 0.01),
-      new THREE.MeshLambertMaterial({ color: 0x111111 }),
+      new THREE.SphereGeometry(eyeSize * 0.35, 4, 4),
+      mat({ color: 0x111111 }),
     );
-    pupil.position.set(xOff, eyeY, faceZ + 0.01);
+    pupil.position.set(xOff, eyeY, faceZ + 0.03);
     eyeGroup.add(pupil);
   }
   group.add(eyeGroup);
@@ -33,15 +38,15 @@ function addEyes(group: THREE.Group, eyeY: number, faceZ: number, spacing = 0.08
   const xGroup = new THREE.Group();
   xGroup.name = 'eyes_dead';
   xGroup.visible = false;
-  const xMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  const xMat = mat({ color: 0x111111 });
   for (const xOff of [-spacing, spacing]) {
     for (const angle of [Math.PI / 4, -Math.PI / 4]) {
       const bar = new THREE.Mesh(
-        new THREE.BoxGeometry(eyeSize * 1.4, eyeSize * 0.3, 0.01),
+        new THREE.CylinderGeometry(eyeSize * 0.15, eyeSize * 0.15, eyeSize * 1.2, 3),
         xMat,
       );
       bar.position.set(xOff, eyeY, faceZ + 0.01);
-      bar.rotation.z = angle;
+      bar.rotation.set(0, 0, angle);
       xGroup.add(bar);
     }
   }
@@ -53,55 +58,55 @@ export function createMainBase(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Base structure
+  // Organic stone base — hexagonal keep
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(8, 5, 8),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    new THREE.CylinderGeometry(4.5, 5, 5, 6),
+    mat({ color: 0xbbaa88 }),
   );
   body.position.y = 2.5;
   group.add(body);
 
-  // Pyramid roof
+  // Conical roof
   const roof = new THREE.Mesh(
-    new THREE.ConeGeometry(6, 2.5, 4),
-    new THREE.MeshLambertMaterial({ color: c.dark }),
+    new THREE.ConeGeometry(5.2, 3, 6),
+    mat({ color: c.dark }),
   );
-  roof.position.y = 6.25;
-  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 6.5;
   group.add(roof);
 
-  // Door marking (front face)
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(1.5, 2.5, 0.1),
-    new THREE.MeshLambertMaterial({ color: 0x332211 }),
+  // Team-colored band around the base
+  const band = new THREE.Mesh(
+    new THREE.CylinderGeometry(5.05, 5.05, 0.6, 6),
+    mat({ color: c.primary }),
   );
-  door.position.set(0, 1.25, 4.05);
+  band.position.y = 0.8;
+  group.add(band);
+
+  // Arched doorway
+  const door = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.8, 0.8, 2.5, 8, 1, false, 0, Math.PI),
+    mat({ color: 0x221100 }),
+  );
+  door.rotation.y = Math.PI;
+  door.position.set(0, 1.25, 4.5);
   group.add(door);
 
-  // Turret platform on top of roof
+  // Turret platform
   const platform = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.2, 1.2, 0.4, 8),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    new THREE.CylinderGeometry(1.2, 1.4, 0.4, 6),
+    mat({ color: 0x999988 }),
   );
-  platform.position.y = 7.7;
+  platform.position.y = 8.0;
   group.add(platform);
 
   // Turret gun barrel
   const barrel = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.2, 0.15, 2.5, 6),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }),
+    new THREE.CylinderGeometry(0.2, 0.15, 2.5, 5),
+    mat({ color: 0x444444 }),
   );
   barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 8.0, 1.0);
+  barrel.position.set(0, 8.3, 1.0);
   group.add(barrel);
-
-  // Turret housing
-  const housing = new THREE.Mesh(
-    new THREE.BoxGeometry(1.0, 0.8, 1.0),
-    new THREE.MeshLambertMaterial({ color: c.light }),
-  );
-  housing.position.y = 8.0;
-  group.add(housing);
 
   // Merge into a single mesh for raycasting
   return groupToMesh(group);
@@ -112,22 +117,29 @@ export function createTower(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Main cylinder
+  // Stone tower body — tapered cylinder
   const tower = new THREE.Mesh(
-    new THREE.CylinderGeometry(2, 2.2, 8, 8),
-    new THREE.MeshLambertMaterial({ color: c.light }),
+    new THREE.CylinderGeometry(1.8, 2.5, 8, 7),
+    mat({ color: 0xaa9977 }),
   );
   tower.position.y = 4;
   group.add(tower);
 
-  // Top ring (battlements)
+  // Team-colored band
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(2, 0.3, 6, 8),
-    new THREE.MeshLambertMaterial({ color: c.dark }),
+    new THREE.CylinderGeometry(2.55, 2.55, 0.5, 7),
+    mat({ color: c.primary }),
   );
-  ring.position.y = 8;
-  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 1.0;
   group.add(ring);
+
+  // Stone cap rim
+  const cap = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.2, 1.9, 0.4, 7),
+    mat({ color: 0x998866 }),
+  );
+  cap.position.y = 8.2;
+  group.add(cap);
 
   // Turret platform (rotates)
   const turret = new THREE.Group();
@@ -137,7 +149,7 @@ export function createTower(teamId: 1 | 2): THREE.Mesh {
   // Turret base (wider, more visible)
   const turretBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.8, 1.0, 0.6, 8),
-    new THREE.MeshLambertMaterial({ color: 0x666666 }),
+    mat({ color: 0x666666 }),
   );
   turret.add(turretBase);
 
@@ -147,7 +159,7 @@ export function createTower(teamId: 1 | 2): THREE.Mesh {
 
   const barrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.15, 0.15, 4.5, 6),
-    new THREE.MeshLambertMaterial({ color: 0x444444 }),
+    mat({ color: 0x444444 }),
   );
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0, 2.25);
@@ -156,7 +168,7 @@ export function createTower(teamId: 1 | 2): THREE.Mesh {
   // Barrel housing (thicker section near base)
   const housing = new THREE.Mesh(
     new THREE.CylinderGeometry(0.25, 0.25, 1.0, 6),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    mat({ color: 0x555555 }),
   );
   housing.rotation.x = Math.PI / 2;
   housing.position.set(0, 0, 0.5);
@@ -185,38 +197,30 @@ export function createFarm(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Barn structure
+  // Round cottage body
   const barn = new THREE.Mesh(
-    new THREE.BoxGeometry(3, 2.5, 3),
-    new THREE.MeshLambertMaterial({ color: 0x8B6914 }),
+    new THREE.CylinderGeometry(1.8, 2.0, 2.5, 6),
+    mat({ color: 0x8B7744 }),
   );
   barn.position.y = 1.25;
   group.add(barn);
 
-  // Roof
+  // Domed thatched roof
   const roof = new THREE.Mesh(
-    new THREE.ConeGeometry(2.5, 1.2, 4),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    new THREE.SphereGeometry(2.2, 6, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+    mat({ color: c.primary }),
   );
-  roof.position.y = 3.1;
-  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 2.5;
   group.add(roof);
 
-  // Door
-  const door = new THREE.Mesh(
-    new THREE.BoxGeometry(0.8, 1.2, 0.05),
-    new THREE.MeshLambertMaterial({ color: 0x553311 }),
-  );
-  door.position.set(0, 0.6, 1.53);
-  group.add(door);
-
-  // Crop patches (green squares around the barn)
-  for (const [x, z] of [[-2, -1], [-2, 1], [2, -1], [2, 1]] as const) {
+  // Crop patches (low-poly green icosahedrons)
+  for (const [x, z] of [[-2.2, -1], [-2.2, 1], [2.2, -1], [2.2, 1]] as const) {
     const crop = new THREE.Mesh(
-      new THREE.BoxGeometry(1.2, 0.15, 1.2),
-      new THREE.MeshLambertMaterial({ color: 0x44aa33 }),
+      new THREE.IcosahedronGeometry(0.5, 0),
+      mat({ color: 0x44aa33 }),
     );
-    crop.position.set(x, 0.08, z);
+    crop.position.set(x, 0.3, z);
+    crop.scale.set(1, 0.4, 1);
     group.add(crop);
   }
 
@@ -228,26 +232,26 @@ export function createBarracks(teamId: 1 | 2): THREE.Mesh {
   const group = new THREE.Group();
 
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(5, 3, 5),
-    new THREE.MeshLambertMaterial({ color: 0x556655 }),
+    new THREE.CylinderGeometry(3, 3.2, 3, 8),
+    mat({ color: 0x667766 }),
   );
   body.position.y = 1.5;
   group.add(body);
 
-  // Flat angled roof
+  // Conical roof
   const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(5.5, 0.4, 5.5),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    new THREE.ConeGeometry(3.5, 1.5, 8),
+    mat({ color: c.primary }),
   );
-  roof.position.y = 3.2;
+  roof.position.y = 3.75;
   group.add(roof);
 
-  // Stripe marking
+  // Team band
   const stripe = new THREE.Mesh(
-    new THREE.BoxGeometry(5.1, 0.6, 0.15),
-    new THREE.MeshLambertMaterial({ color: c.light }),
+    new THREE.CylinderGeometry(3.25, 3.25, 0.4, 8),
+    mat({ color: c.light }),
   );
-  stripe.position.set(0, 2, 2.55);
+  stripe.position.y = 2.0;
   group.add(stripe);
 
   return groupToMesh(group);
@@ -258,32 +262,37 @@ export function createArmory(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
+  // Forge-like pentagon shape
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(5, 3, 5),
-    new THREE.MeshLambertMaterial({ color: 0x555566 }),
+    new THREE.CylinderGeometry(2.8, 3.2, 3, 5),
+    mat({ color: 0x555566 }),
   );
   body.position.y = 1.5;
   group.add(body);
 
-  // Angled roof
+  // Domed forge roof
   const roof = new THREE.Mesh(
-    new THREE.ConeGeometry(3.5, 1.5, 4),
-    new THREE.MeshLambertMaterial({ color: 0x666677 }),
+    new THREE.SphereGeometry(3.0, 5, 3, 0, Math.PI * 2, 0, Math.PI / 2),
+    mat({ color: 0x666677 }),
   );
-  roof.position.y = 3.75;
-  roof.rotation.y = Math.PI / 4;
+  roof.position.y = 3.0;
   group.add(roof);
 
-  // Weapon rack markers (X on front)
-  for (const rot of [Math.PI / 4, -Math.PI / 4]) {
-    const bar = new THREE.Mesh(
-      new THREE.BoxGeometry(0.1, 1.5, 0.1),
-      new THREE.MeshLambertMaterial({ color: c.light }),
-    );
-    bar.position.set(0, 1.5, 2.55);
-    bar.rotation.z = rot;
-    group.add(bar);
-  }
+  // Chimney
+  const chimney = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.3, 0.4, 2, 5),
+    mat({ color: 0x444455 }),
+  );
+  chimney.position.set(1.5, 4.0, 0);
+  group.add(chimney);
+
+  // Team accent band
+  const accent = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.25, 3.25, 0.3, 5),
+    mat({ color: c.light }),
+  );
+  accent.position.y = 0.5;
+  group.add(accent);
 
   return groupToMesh(group);
 }
@@ -297,7 +306,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Main stone body
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(6, 4, 6),
-    new THREE.MeshLambertMaterial({ color: stone }),
+    mat({ color: stone }),
   );
   body.position.y = 2;
   group.add(body);
@@ -305,7 +314,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Central tower
   const centralTower = new THREE.Mesh(
     new THREE.BoxGeometry(2.5, 3, 2.5),
-    new THREE.MeshLambertMaterial({ color: stone }),
+    mat({ color: stone }),
   );
   centralTower.position.y = 5.5;
   group.add(centralTower);
@@ -313,7 +322,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Central roof (blue cone)
   const centralRoof = new THREE.Mesh(
     new THREE.ConeGeometry(2, 2.5, 6),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   centralRoof.position.y = 8.25;
   group.add(centralRoof);
@@ -321,7 +330,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Gold spire on top
   const centralSpire = new THREE.Mesh(
     new THREE.ConeGeometry(0.2, 1.2, 4),
-    new THREE.MeshLambertMaterial({ color: 0xddaa00 }),
+    mat({ color: 0xddaa00 }),
   );
   centralSpire.position.y = 10;
   group.add(centralSpire);
@@ -330,21 +339,21 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   for (const [cx, cz] of [[-2.5, -2.5], [2.5, -2.5], [-2.5, 2.5], [2.5, 2.5]]) {
     const turret = new THREE.Mesh(
       new THREE.CylinderGeometry(0.8, 0.9, 4.5, 6),
-      new THREE.MeshLambertMaterial({ color: stone }),
+      mat({ color: stone }),
     );
     turret.position.set(cx, 2.25, cz);
     group.add(turret);
 
     const turretRoof = new THREE.Mesh(
       new THREE.ConeGeometry(1.1, 1.5, 6),
-      new THREE.MeshLambertMaterial({ color: c.primary }),
+      mat({ color: c.primary }),
     );
     turretRoof.position.set(cx, 5.25, cz);
     group.add(turretRoof);
 
     const spire = new THREE.Mesh(
       new THREE.ConeGeometry(0.15, 0.8, 4),
-      new THREE.MeshLambertMaterial({ color: 0xddaa00 }),
+      mat({ color: 0xddaa00 }),
     );
     spire.position.set(cx, 6.4, cz);
     group.add(spire);
@@ -353,7 +362,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Front archway (dark opening)
   const archway = new THREE.Mesh(
     new THREE.BoxGeometry(1.5, 2.5, 0.3),
-    new THREE.MeshLambertMaterial({ color: 0x332211 }),
+    mat({ color: 0x332211 }),
   );
   archway.position.set(0, 1.25, 3.1);
   group.add(archway);
@@ -361,7 +370,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Banner on front (team-colored, red/gold trim)
   const banner = new THREE.Mesh(
     new THREE.PlaneGeometry(1.2, 1.8),
-    new THREE.MeshLambertMaterial({ color: c.light, side: THREE.DoubleSide }),
+    mat({ color: c.light, side: THREE.DoubleSide }),
   );
   banner.position.set(0, 5, 3.15);
   group.add(banner);
@@ -369,7 +378,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
   // Gold emblem on banner
   const emblem = new THREE.Mesh(
     new THREE.CircleGeometry(0.35, 8),
-    new THREE.MeshLambertMaterial({ color: 0xddaa00, side: THREE.DoubleSide }),
+    mat({ color: 0xddaa00, side: THREE.DoubleSide }),
   );
   emblem.position.set(0, 5.2, 3.2);
   group.add(emblem);
@@ -384,32 +393,33 @@ export function createGarage(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Main body — wide rectangle
+  // Main body — rounded hangar shape
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(7, 4, 6),
-    new THREE.MeshLambertMaterial({ color: 0x5a5a5a }),
+    new THREE.CylinderGeometry(3.5, 4, 4, 8),
+    mat({ color: 0x6a6a6a }),
   );
   body.position.y = 2;
   group.add(body);
 
-  // Flat roof with slight overhang
+  // Domed roof
   const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(7.4, 0.3, 6.4),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    new THREE.SphereGeometry(4.0, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+    mat({ color: c.primary }),
   );
-  roof.position.y = 4.15;
+  roof.position.y = 4.0;
   group.add(roof);
 
-  // Garage door (front face) — large opening
+  // Garage door opening
   const door = new THREE.Mesh(
-    new THREE.BoxGeometry(4.5, 3, 0.15),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }),
+    new THREE.CylinderGeometry(1.5, 1.5, 3, 8, 1, false, 0, Math.PI),
+    mat({ color: 0x222222 }),
   );
-  door.position.set(0, 1.5, 3.05);
+  door.rotation.y = Math.PI;
+  door.position.set(0, 1.5, 3.5);
   group.add(door);
 
   // Door frame
-  const frameMat = new THREE.MeshLambertMaterial({ color: c.light });
+  const frameMat = mat({ color: c.light });
   // Top bar
   const topBar = new THREE.Mesh(new THREE.BoxGeometry(5, 0.25, 0.2), frameMat);
   topBar.position.set(0, 3.1, 3.05);
@@ -422,7 +432,7 @@ export function createGarage(teamId: 1 | 2): THREE.Mesh {
   }
 
   // "G" label on top
-  const labelMat = new THREE.MeshLambertMaterial({ color: c.light });
+  const labelMat = mat({ color: c.light });
   // G shape made of boxes
   const gParts: [number, number, number, number, number][] = [
     // [w, h, x, y, z] relative to roof top
@@ -446,34 +456,35 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Chassis — wide, low body
+  // Chassis — rounded body
   const chassis = new THREE.Mesh(
-    new THREE.BoxGeometry(2.8, 0.8, 4.5),
-    new THREE.MeshLambertMaterial({ color: 0x5a6a3a }),
+    new THREE.CylinderGeometry(1.2, 1.4, 4.5, 6),
+    mat({ color: 0x5a6a3a }),
   );
+  chassis.rotation.x = Math.PI / 2;
   chassis.position.y = 0.7;
   group.add(chassis);
 
-  // Hood (front, slightly raised and angled)
+  // Hood (front, tapered)
   const hood = new THREE.Mesh(
-    new THREE.BoxGeometry(2.4, 0.4, 1.5),
-    new THREE.MeshLambertMaterial({ color: 0x4e5e32 }),
+    new THREE.ConeGeometry(1.0, 1.5, 5),
+    mat({ color: 0x4e5e32 }),
   );
-  hood.position.set(0, 1.2, -1.2);
-  hood.rotation.x = -0.15;
+  hood.rotation.x = -Math.PI / 2;
+  hood.position.set(0, 0.9, -2.5);
   group.add(hood);
 
-  // Windshield
+  // Windshield — angled dome
   const windshield = new THREE.Mesh(
-    new THREE.BoxGeometry(2.2, 0.8, 0.1),
-    new THREE.MeshLambertMaterial({ color: 0x88ccee, transparent: true, opacity: 0.5 }),
+    new THREE.SphereGeometry(0.6, 5, 3, 0, Math.PI * 2, 0, Math.PI / 2),
+    mat({ color: 0x88ccee, transparent: true, opacity: 0.5 }),
   );
-  windshield.position.set(0, 1.6, -0.4);
+  windshield.position.set(0, 1.4, -0.6);
   windshield.rotation.x = -0.3;
   group.add(windshield);
 
   // Roll cage / cab frame
-  const cageMat = new THREE.MeshLambertMaterial({ color: 0x444444 });
+  const cageMat = mat({ color: 0x444444 });
   for (const xSign of [-1, 1]) {
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.0, 0.1), cageMat);
     post.position.set(xSign * 1.15, 1.6, -0.1);
@@ -486,7 +497,7 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   // Rear bed
   const bed = new THREE.Mesh(
     new THREE.BoxGeometry(2.8, 0.5, 1.8),
-    new THREE.MeshLambertMaterial({ color: 0x4e5e32 }),
+    mat({ color: 0x4e5e32 }),
   );
   bed.position.set(0, 0.8, 1.4);
   group.add(bed);
@@ -495,15 +506,15 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   for (const xSign of [-1, 1]) {
     const panel = new THREE.Mesh(
       new THREE.BoxGeometry(0.15, 0.6, 1.5),
-      new THREE.MeshLambertMaterial({ color: 0x5a6a3a }),
+      mat({ color: 0x5a6a3a }),
     );
     panel.position.set(xSign * 1.4, 1.2, 1.4);
     group.add(panel);
   }
 
   // Wheels (4)
-  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x222222 });
-  const hubMat = new THREE.MeshLambertMaterial({ color: 0x666666 });
+  const wheelMat = mat({ color: 0x222222 });
+  const hubMat = mat({ color: 0x666666 });
   const wheelPositions: [number, number][] = [[-1.4, -1.3], [1.4, -1.3], [-1.4, 1.5], [1.4, 1.5]];
   for (const [wx, wz] of wheelPositions) {
     const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.35, 8), wheelMat);
@@ -527,7 +538,7 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   // Front bumper/grille
   const grille = new THREE.Mesh(
     new THREE.BoxGeometry(2.0, 0.4, 0.15),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    mat({ color: 0x555555 }),
   );
   grille.position.set(0, 0.8, -2.25);
   group.add(grille);
@@ -540,12 +551,12 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   // Turret base/pedestal
   const turretBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.4, 0.5, 0.4, 6),
-    new THREE.MeshLambertMaterial({ color: 0x666666 }),
+    mat({ color: 0x666666 }),
   );
   turretGroup.add(turretBase);
 
   // Shield plates
-  const shieldMat = new THREE.MeshLambertMaterial({ color: c.primary });
+  const shieldMat = mat({ color: c.primary });
   const shield = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 0.1), shieldMat);
   shield.position.set(0, 0.5, -0.4);
   turretGroup.add(shield);
@@ -556,7 +567,7 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   }
 
   // Gun barrels (twin)
-  const barrelMat = new THREE.MeshLambertMaterial({ color: 0x444444 });
+  const barrelMat = mat({ color: 0x444444 });
   for (const xSign of [-0.5, 0.5]) {
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.8, 5), barrelMat);
     barrel.rotation.x = Math.PI / 2;
@@ -579,7 +590,7 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
   // Team color stripe along side
   const stripe = new THREE.Mesh(
     new THREE.BoxGeometry(0.05, 0.2, 4.5),
-    new THREE.MeshLambertMaterial({ color: c.light }),
+    mat({ color: c.light }),
   );
   stripe.position.set(1.42, 0.9, 0);
   group.add(stripe);
@@ -597,14 +608,14 @@ export function createPlayerTower(teamId: 1 | 2): THREE.Mesh {
 
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(1.8, 2, 7, 6),
-    new THREE.MeshLambertMaterial({ color: c.light }),
+    mat({ color: c.light }),
   );
   base.position.y = 3.5;
   group.add(base);
 
   const top = new THREE.Mesh(
     new THREE.ConeGeometry(2.2, 1.5, 6),
-    new THREE.MeshLambertMaterial({ color: c.dark }),
+    mat({ color: c.dark }),
   );
   top.position.y = 7.75;
   group.add(top);
@@ -616,7 +627,7 @@ export function createPlayerTower(teamId: 1 | 2): THREE.Mesh {
 
   const turretBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.6, 0.7, 0.4, 6),
-    new THREE.MeshLambertMaterial({ color: 0x666666 }),
+    mat({ color: 0x666666 }),
   );
   turret.add(turretBase);
 
@@ -626,14 +637,14 @@ export function createPlayerTower(teamId: 1 | 2): THREE.Mesh {
   barrelGroup.rotation.x = 0.2;
   const barrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.1, 0.1, 3.0, 6),
-    new THREE.MeshLambertMaterial({ color: 0x444444 }),
+    mat({ color: 0x444444 }),
   );
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0, 1.5);
   barrelGroup.add(barrel);
   const housing = new THREE.Mesh(
     new THREE.CylinderGeometry(0.18, 0.18, 0.7, 6),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    mat({ color: 0x555555 }),
   );
   housing.rotation.x = Math.PI / 2;
   housing.position.set(0, 0, 0.35);
@@ -662,7 +673,7 @@ export function createResourceNode(): THREE.Mesh {
   // Rocky base
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(1.8, 2.2, 0.4, 8),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    mat({ color: 0x555555 }),
   );
   base.position.y = 0.2;
   group.add(base);
@@ -670,7 +681,7 @@ export function createResourceNode(): THREE.Mesh {
   // Main large crystal
   const mainCrystal = new THREE.Mesh(
     new THREE.OctahedronGeometry(0.9, 0),
-    new THREE.MeshLambertMaterial({ color: 0x44ccff, emissive: 0x112244 }),
+    mat({ color: 0x44ccff, emissive: 0x112244 }),
   );
   mainCrystal.position.set(0, 1.2, 0);
   mainCrystal.scale.set(1, 1.5, 1);
@@ -687,7 +698,7 @@ export function createResourceNode(): THREE.Mesh {
   for (const o of offsets) {
     const c = new THREE.Mesh(
       new THREE.OctahedronGeometry(o.s, 0),
-      new THREE.MeshLambertMaterial({ color: 0x55ddff, emissive: 0x0a1a33 }),
+      mat({ color: 0x55ddff, emissive: 0x0a1a33 }),
     );
     c.position.set(o.x, o.h, o.z);
     c.scale.set(1, 1.4, 1);
@@ -725,14 +736,14 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
 
     const boot = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.2, 0.22),
-      new THREE.MeshLambertMaterial({ color: 0x553322 }),
+      mat({ color: 0x553322 }),
     );
     boot.position.set(0, -0.4, 0);
     legGroup.add(boot);
 
     const overalls = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.3, 0.2),
-      new THREE.MeshLambertMaterial({ color: overallColor }),
+      mat({ color: overallColor }),
     );
     overalls.position.set(0, -0.15, 0);
     legGroup.add(overalls);
@@ -743,7 +754,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // White t-shirt (upper body)
   const shirt = new THREE.Mesh(
     new THREE.BoxGeometry(0.5, 0.25, 0.35),
-    new THREE.MeshLambertMaterial({ color: 0xeeeeee }),
+    mat({ color: 0xeeeeee }),
   );
   shirt.position.y = 0.65;
   group.add(shirt);
@@ -751,7 +762,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Team-colored overalls bib
   const bib = new THREE.Mesh(
     new THREE.BoxGeometry(0.36, 0.2, 0.36),
-    new THREE.MeshLambertMaterial({ color: overallColor }),
+    mat({ color: overallColor }),
   );
   bib.position.set(0, 0.72, 0);
   group.add(bib);
@@ -762,21 +773,21 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   bag.visible = false;
   const sack = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.5, 0.4),
-    new THREE.MeshLambertMaterial({ color: 0x886644 }),
+    mat({ color: 0x886644 }),
   );
   sack.position.set(0, 0.55, -0.28);
   bag.add(sack);
   // Crystals poking out of the top
   const crystal = new THREE.Mesh(
     new THREE.OctahedronGeometry(0.14, 0),
-    new THREE.MeshLambertMaterial({ color: 0x44ccff, emissive: 0x112244 }),
+    mat({ color: 0x44ccff, emissive: 0x112244 }),
   );
   crystal.position.set(0.08, 0.85, -0.28);
   crystal.scale.set(1, 1.3, 1);
   bag.add(crystal);
   const crystal2 = new THREE.Mesh(
     new THREE.OctahedronGeometry(0.1, 0),
-    new THREE.MeshLambertMaterial({ color: 0x55ddff, emissive: 0x0a1a33 }),
+    mat({ color: 0x55ddff, emissive: 0x0a1a33 }),
   );
   crystal2.position.set(-0.1, 0.82, -0.25);
   crystal2.scale.set(1, 1.2, 1);
@@ -786,7 +797,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Brown tool belt
   const belt = new THREE.Mesh(
     new THREE.BoxGeometry(0.52, 0.06, 0.37),
-    new THREE.MeshLambertMaterial({ color: 0x885533 }),
+    mat({ color: 0x885533 }),
   );
   belt.position.y = 0.52;
   group.add(belt);
@@ -794,7 +805,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Head (skin tone)
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.28, 0.26, 0.26),
-    new THREE.MeshLambertMaterial({ color: 0xddbb88 }),
+    mat({ color: 0xddbb88 }),
   );
   head.position.y = 0.97;
   group.add(head);
@@ -804,7 +815,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Brown beard
   const beard = new THREE.Mesh(
     new THREE.BoxGeometry(0.24, 0.1, 0.14),
-    new THREE.MeshLambertMaterial({ color: 0x664422 }),
+    mat({ color: 0x664422 }),
   );
   beard.position.set(0, 0.87, 0.08);
   group.add(beard);
@@ -812,14 +823,14 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Yellow hard hat (brim + dome)
   const hatBrim = new THREE.Mesh(
     new THREE.CylinderGeometry(0.22, 0.22, 0.04, 8),
-    new THREE.MeshLambertMaterial({ color: 0xffcc00 }),
+    mat({ color: 0xffcc00 }),
   );
   hatBrim.position.y = 1.12;
   group.add(hatBrim);
 
   const hatDome = new THREE.Mesh(
     new THREE.SphereGeometry(0.17, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2),
-    new THREE.MeshLambertMaterial({ color: 0xffcc00 }),
+    mat({ color: 0xffcc00 }),
   );
   hatDome.position.y = 1.14;
   group.add(hatDome);
@@ -827,7 +838,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
   // Orange hat band
   const hatBand = new THREE.Mesh(
     new THREE.CylinderGeometry(0.175, 0.175, 0.03, 8),
-    new THREE.MeshLambertMaterial({ color: 0xff8800 }),
+    mat({ color: 0xff8800 }),
   );
   hatBand.position.y = 1.12;
   group.add(hatBand);
@@ -839,7 +850,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
 
   const hammerHandle = new THREE.Mesh(
     new THREE.CylinderGeometry(0.02, 0.02, 0.4, 4),
-    new THREE.MeshLambertMaterial({ color: 0x885533 }),
+    mat({ color: 0x885533 }),
   );
   hammerHandle.position.set(0, -0.1, 0);
   hammerHandle.rotation.z = -0.3;
@@ -847,7 +858,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
 
   const hammerHead = new THREE.Mesh(
     new THREE.BoxGeometry(0.06, 0.12, 0.06),
-    new THREE.MeshLambertMaterial({ color: 0x888888 }),
+    mat({ color: 0x888888 }),
   );
   hammerHead.position.set(0.06, 0.12, 0);
   weaponGroup.add(hammerHead);
@@ -870,14 +881,14 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
 
     const boot = new THREE.Mesh(
       new THREE.BoxGeometry(0.16, 0.15, 0.2),
-      new THREE.MeshLambertMaterial({ color: 0x664433 }),
+      mat({ color: 0x664433 }),
     );
     boot.position.set(0, -0.325, 0);
     legGroup.add(boot);
 
     const pants = new THREE.Mesh(
       new THREE.BoxGeometry(0.16, 0.25, 0.18),
-      new THREE.MeshLambertMaterial({ color: 0x556633 }),
+      mat({ color: 0x556633 }),
     );
     pants.position.set(0, -0.12, 0);
     legGroup.add(pants);
@@ -888,14 +899,14 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // Brown leather belt with buckle
   const belt = new THREE.Mesh(
     new THREE.BoxGeometry(0.46, 0.06, 0.32),
-    new THREE.MeshLambertMaterial({ color: 0x775533 }),
+    mat({ color: 0x775533 }),
   );
   belt.position.y = 0.43;
   group.add(belt);
 
   const buckle = new THREE.Mesh(
     new THREE.BoxGeometry(0.06, 0.04, 0.01),
-    new THREE.MeshLambertMaterial({ color: 0xaa8833 }),
+    mat({ color: 0xaa8833 }),
   );
   buckle.position.set(0, 0.43, 0.165);
   group.add(buckle);
@@ -904,7 +915,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   for (const xOff of [-0.26, 0.26]) {
     const arm = new THREE.Mesh(
       new THREE.BoxGeometry(0.12, 0.3, 0.14),
-      new THREE.MeshLambertMaterial({ color: 0xddaa77 }),
+      mat({ color: 0xddaa77 }),
     );
     arm.position.set(xOff, 0.6, 0);
     group.add(arm);
@@ -914,7 +925,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   for (const xOff of [-0.26, 0.26]) {
     const guard = new THREE.Mesh(
       new THREE.BoxGeometry(0.13, 0.08, 0.15),
-      new THREE.MeshLambertMaterial({ color: 0x664422 }),
+      mat({ color: 0x664422 }),
     );
     guard.position.set(xOff, 0.48, 0);
     group.add(guard);
@@ -923,7 +934,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // Brown leather vest (torso)
   const vest = new THREE.Mesh(
     new THREE.BoxGeometry(0.42, 0.35, 0.3),
-    new THREE.MeshLambertMaterial({ color: 0x885533 }),
+    mat({ color: 0x885533 }),
   );
   vest.position.y = 0.63;
   group.add(vest);
@@ -931,7 +942,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // V-neck skin showing
   const vneck = new THREE.Mesh(
     new THREE.BoxGeometry(0.12, 0.1, 0.01),
-    new THREE.MeshLambertMaterial({ color: 0xddaa77 }),
+    mat({ color: 0xddaa77 }),
   );
   vneck.position.set(0, 0.72, 0.155);
   group.add(vneck);
@@ -939,7 +950,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // Head (skin tone)
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.26, 0.24, 0.24),
-    new THREE.MeshLambertMaterial({ color: 0xddbb88 }),
+    mat({ color: 0xddbb88 }),
   );
   head.position.y = 0.95;
   group.add(head);
@@ -950,7 +961,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   for (let i = 0; i < 7; i++) {
     const spike = new THREE.Mesh(
       new THREE.BoxGeometry(0.06, 0.08 + Math.random() * 0.06, 0.06),
-      new THREE.MeshLambertMaterial({ color: hairColor }),
+      mat({ color: hairColor }),
     );
     spike.position.set(
       (Math.random() - 0.5) * 0.2,
@@ -968,7 +979,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // Red headband (team-colored)
   const headband = new THREE.Mesh(
     new THREE.BoxGeometry(0.28, 0.04, 0.26),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   headband.position.y = 1.0;
   group.add(headband);
@@ -976,7 +987,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
   // Headband tail (small flap trailing behind)
   const bandTail = new THREE.Mesh(
     new THREE.BoxGeometry(0.04, 0.03, 0.1),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   bandTail.position.set(0.13, 0.99, -0.16);
   bandTail.rotation.z = -0.3;
@@ -989,7 +1000,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
 
   const clubHandle = new THREE.Mesh(
     new THREE.CylinderGeometry(0.035, 0.03, 0.6, 5),
-    new THREE.MeshLambertMaterial({ color: 0x775533 }),
+    mat({ color: 0x775533 }),
   );
   clubHandle.position.set(0.1, -0.2, 0.1);
   clubHandle.rotation.z = Math.PI / 2;
@@ -997,7 +1008,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
 
   const clubHead = new THREE.Mesh(
     new THREE.CylinderGeometry(0.06, 0.04, 0.15, 5),
-    new THREE.MeshLambertMaterial({ color: 0x664422 }),
+    mat({ color: 0x664422 }),
   );
   clubHead.position.set(0.35, -0.2, 0.1);
   clubHead.rotation.z = Math.PI / 2;
@@ -1021,7 +1032,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
     legGroup.position.set(xOff, 0.4, 0);
     const leg = new THREE.Mesh(
       new THREE.BoxGeometry(0.14, 0.4, 0.16),
-      new THREE.MeshLambertMaterial({ color: 0x556644 }),
+      mat({ color: 0x556644 }),
     );
     leg.position.set(0, -0.2, 0);
     legGroup.add(leg);
@@ -1031,7 +1042,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   // Body (hooded tunic)
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.38, 0.38, 0.28),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   body.position.y = 0.6;
   group.add(body);
@@ -1039,7 +1050,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   // Head
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.22, 0.22, 0.22),
-    new THREE.MeshLambertMaterial({ color: 0xddbb88 }),
+    mat({ color: 0xddbb88 }),
   );
   head.position.y = 0.93;
   group.add(head);
@@ -1048,7 +1059,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   // Hood
   const hood = new THREE.Mesh(
     new THREE.BoxGeometry(0.26, 0.16, 0.26),
-    new THREE.MeshLambertMaterial({ color: c.dark }),
+    mat({ color: c.dark }),
   );
   hood.position.y = 1.04;
   group.add(hood);
@@ -1060,7 +1071,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
 
   const bowCurve = new THREE.Mesh(
     new THREE.TorusGeometry(0.2, 0.02, 4, 8, Math.PI),
-    new THREE.MeshLambertMaterial({ color: 0x885533 }),
+    mat({ color: 0x885533 }),
   );
   bowCurve.rotation.z = Math.PI / 2;
   weaponGroup.add(bowCurve);
@@ -1068,7 +1079,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   // Bowstring
   const string = new THREE.Mesh(
     new THREE.CylinderGeometry(0.005, 0.005, 0.4, 3),
-    new THREE.MeshLambertMaterial({ color: 0xcccccc }),
+    mat({ color: 0xcccccc }),
   );
   string.position.x = 0.0;
   weaponGroup.add(string);
@@ -1078,7 +1089,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   // Quiver on back
   const quiver = new THREE.Mesh(
     new THREE.CylinderGeometry(0.06, 0.05, 0.35, 5),
-    new THREE.MeshLambertMaterial({ color: 0x664422 }),
+    mat({ color: 0x664422 }),
   );
   quiver.position.set(0.1, 0.65, -0.18);
   quiver.rotation.z = 0.15;
@@ -1099,7 +1110,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
 
     const leg = new THREE.Mesh(
       new THREE.BoxGeometry(0.14, 0.4, 0.16),
-      new THREE.MeshLambertMaterial({ color: 0x444444 }),
+      mat({ color: 0x444444 }),
     );
     leg.position.set(0, -0.2, 0);
     legGroup.add(leg);
@@ -1109,7 +1120,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
   // Body (tactical vest)
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.4, 0.4, 0.3),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   body.position.set(0, 0.6, 0);
   group.add(body);
@@ -1117,7 +1128,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
   // Head
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(0.22, 0.22, 0.22),
-    new THREE.MeshLambertMaterial({ color: 0xddbb88 }),
+    mat({ color: 0xddbb88 }),
   );
   head.position.set(0, 0.93, 0);
   group.add(head);
@@ -1126,7 +1137,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
   // Beret
   const beret = new THREE.Mesh(
     new THREE.CylinderGeometry(0.14, 0.12, 0.08, 8),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   beret.position.set(0.02, 1.08, 0);
   group.add(beret);
@@ -1137,7 +1148,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
   weaponGroup.position.set(0.28, 0.6, -0.1);
   const gun = new THREE.Mesh(
     new THREE.BoxGeometry(0.08, 0.08, 0.4),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }),
+    mat({ color: 0x333333 }),
   );
   weaponGroup.add(gun);
   group.add(weaponGroup);
@@ -1150,15 +1161,15 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  const skinMat = new THREE.MeshLambertMaterial({ color: 0xc8a070 });
-  const bootMat = new THREE.MeshLambertMaterial({ color: 0x5c3a1e });
-  const beltMat = new THREE.MeshLambertMaterial({ color: 0x6b4226 });
-  const pantsMat = new THREE.MeshLambertMaterial({ color: 0x6b6b3a });
-  const jacketMat = new THREE.MeshLambertMaterial({ color: 0x3a4a7a });
-  const shirtMat = new THREE.MeshLambertMaterial({ color: 0xddddcc });
-  const hairMat = new THREE.MeshLambertMaterial({ color: 0x553322 });
-  const buckleMat = new THREE.MeshLambertMaterial({ color: 0xbb9933 });
-  const capeMat = new THREE.MeshLambertMaterial({ color: c.primary, side: THREE.DoubleSide });
+  const skinMat = mat({ color: 0xc8a070 });
+  const bootMat = mat({ color: 0x5c3a1e });
+  const beltMat = mat({ color: 0x6b4226 });
+  const pantsMat = mat({ color: 0x6b6b3a });
+  const jacketMat = mat({ color: 0x3a4a7a });
+  const shirtMat = mat({ color: 0xddddcc });
+  const hairMat = mat({ color: 0x553322 });
+  const buckleMat = mat({ color: 0xbb9933 });
+  const capeMat = mat({ color: c.primary, side: THREE.DoubleSide });
 
   // ---- Boots ----
   for (const xOff of [-0.13, 0.13]) {
@@ -1182,7 +1193,7 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
     legGroup.add(buckle);
 
     // Boot sole
-    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.04, 0.24), new THREE.MeshLambertMaterial({ color: 0x3a2510 }));
+    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.04, 0.24), mat({ color: 0x3a2510 }));
     sole.position.set(0, -0.50, 0);
     legGroup.add(sole);
 
@@ -1309,7 +1320,7 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
   // Revolver-style (barrel + grip)
   const gunBarrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.025, 0.025, 0.28, 6),
-    new THREE.MeshLambertMaterial({ color: 0x555555 }),
+    mat({ color: 0x555555 }),
   );
   gunBarrel.rotation.x = Math.PI / 2;
   gunBarrel.position.set(0.28, 0.72, 0.22);
@@ -1317,7 +1328,7 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
 
   const gunCylinder = new THREE.Mesh(
     new THREE.CylinderGeometry(0.04, 0.04, 0.08, 6),
-    new THREE.MeshLambertMaterial({ color: 0x444444 }),
+    mat({ color: 0x444444 }),
   );
   gunCylinder.rotation.x = Math.PI / 2;
   gunCylinder.position.set(0.28, 0.72, 0.10);
@@ -1325,7 +1336,7 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
 
   const gunGrip = new THREE.Mesh(
     new THREE.BoxGeometry(0.04, 0.10, 0.06),
-    new THREE.MeshLambertMaterial({ color: 0x6b4226 }),
+    mat({ color: 0x6b4226 }),
   );
   gunGrip.position.set(0.28, 0.65, 0.06);
   group.add(gunGrip);
@@ -1353,7 +1364,7 @@ export function createTurret(teamId: 1 | 2): THREE.Mesh {
   // Sandbag base
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(1.5, 1.8, 1.2, 6),
-    new THREE.MeshLambertMaterial({ color: 0x8a7a5a }),
+    mat({ color: 0x8a7a5a }),
   );
   base.position.y = 0.6;
   group.add(base);
@@ -1361,7 +1372,7 @@ export function createTurret(teamId: 1 | 2): THREE.Mesh {
   // Turret platform
   const platform = new THREE.Mesh(
     new THREE.CylinderGeometry(0.8, 0.8, 0.3, 8),
-    new THREE.MeshLambertMaterial({ color: 0x666666 }),
+    mat({ color: 0x666666 }),
   );
   platform.position.y = 1.35;
   group.add(platform);
@@ -1373,7 +1384,7 @@ export function createTurret(teamId: 1 | 2): THREE.Mesh {
 
   const gunBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.3, 0.4, 0.3, 6),
-    new THREE.MeshLambertMaterial({ color: c.dark }),
+    mat({ color: c.dark }),
   );
   turret.add(gunBase);
 
@@ -1382,7 +1393,7 @@ export function createTurret(teamId: 1 | 2): THREE.Mesh {
 
   const barrel = new THREE.Mesh(
     new THREE.CylinderGeometry(0.08, 0.08, 2.0, 5),
-    new THREE.MeshLambertMaterial({ color: 0x444444 }),
+    mat({ color: 0x444444 }),
   );
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0, 1.0);
@@ -1403,18 +1414,20 @@ export function createTurret(teamId: 1 | 2): THREE.Mesh {
   return groupToMesh(group);
 }
 
-/** Obstacle — rocky block */
+/** Obstacle — organic low-poly boulder */
 export function createObstacle(): THREE.Mesh {
-  const geo = new THREE.BoxGeometry(3, 3, 3);
-  // Slightly randomize vertices for a rough look
+  const geo = new THREE.DodecahedronGeometry(1.8, 1);
+  // Randomize vertices for natural rock look
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) + (Math.random() - 0.5) * 0.3);
-    pos.setY(i, pos.getY(i) + (Math.random() - 0.5) * 0.3);
-    pos.setZ(i, pos.getZ(i) + (Math.random() - 0.5) * 0.3);
+    pos.setX(i, pos.getX(i) * (0.85 + Math.random() * 0.3));
+    pos.setY(i, pos.getY(i) * (0.7 + Math.random() * 0.3));
+    pos.setZ(i, pos.getZ(i) * (0.85 + Math.random() * 0.3));
   }
   geo.computeVertexNormals();
-  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x777766 }));
+  const mesh = new THREE.Mesh(geo, mat({ color: 0x887766 }));
+  mesh.scale.set(1.0, 0.8, 1.0);
+  return mesh;
 }
 
 // ===================== Vegetation =====================
@@ -1426,7 +1439,7 @@ export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
   const group = new THREE.Group();
 
   // Four support poles
-  const poleMat = new THREE.MeshLambertMaterial({ color: 0x664422 });
+  const poleMat = mat({ color: 0x664422 });
   for (const [xOff, zOff] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 10, 5), poleMat);
     pole.position.set(xOff * 1.2, 5, zOff * 1.2);
@@ -1436,13 +1449,13 @@ export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
   // Platform at top
   const platform = new THREE.Mesh(
     new THREE.BoxGeometry(3, 0.2, 3),
-    new THREE.MeshLambertMaterial({ color: 0x886644 }),
+    mat({ color: 0x886644 }),
   );
   platform.position.y = 9.5;
   group.add(platform);
 
   // Low railing (team-colored)
-  const railMat = new THREE.MeshLambertMaterial({ color: c.primary });
+  const railMat = mat({ color: c.primary });
   for (const [xOff, zOff, w, d] of [[-1.4, 0, 0.1, 3], [1.4, 0, 0.1, 3], [0, -1.4, 3, 0.1], [0, 1.4, 3, 0.1]] as const) {
     const rail = new THREE.Mesh(new THREE.BoxGeometry(w, 0.8, d), railMat);
     rail.position.set(xOff, 10, zOff);
@@ -1450,7 +1463,7 @@ export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
   }
 
   // Ladder on one side
-  const ladderMat = new THREE.MeshLambertMaterial({ color: 0x775533 });
+  const ladderMat = mat({ color: 0x775533 });
   // Side rails
   for (const xOff of [-0.3, 0.3]) {
     const sideRail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 10, 0.08), ladderMat);
@@ -1470,7 +1483,7 @@ export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
   group.add(flagPole);
   const flag = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.4, 0.02),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   flag.position.set(-0.9, 11.5, -1.2);
   group.add(flag);
@@ -1480,25 +1493,33 @@ export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
 
 export function createTree(leafColors?: number[], trunkColor?: number): THREE.Group {
   const group = new THREE.Group();
-  // Trunk
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.3, 0.4, 3, 6),
-    new THREE.MeshLambertMaterial({ color: trunkColor ?? 0x664422 }),
-  );
-  trunk.position.y = 1.5;
-  group.add(trunk);
-  // Foliage layers
   const defaultLeaf = 0x227722;
   const colors = leafColors ?? [defaultLeaf];
-  for (const [y, r, h] of [[3.5, 2.2, 2], [4.5, 1.6, 1.8], [5.3, 1.0, 1.4]] as const) {
-    const baseColor = colors[Math.floor(Math.random() * colors.length)];
-    const leaves = new THREE.Mesh(
-      new THREE.ConeGeometry(r, h, 6),
-      new THREE.MeshLambertMaterial({ color: leafColors ? baseColor : (defaultLeaf + Math.floor(Math.random() * 0x112211)) }),
-    );
-    leaves.position.y = y;
-    group.add(leaves);
-  }
+  // Organic trunk — tapered cylinder with slight lean
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.45, 3.5, 5),
+    mat({ color: trunkColor ?? 0x664422 }),
+  );
+  trunk.position.y = 1.75;
+  trunk.rotation.z = (Math.random() - 0.5) * 0.1;
+  group.add(trunk);
+  // Round canopy — overlapping icosahedrons for organic lush look
+  const mainColor = colors[Math.floor(Math.random() * colors.length)];
+  const canopy = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(2.0, 1),
+    mat({ color: mainColor }),
+  );
+  canopy.position.y = 4.5;
+  canopy.scale.set(1, 0.75, 1);
+  group.add(canopy);
+  // Secondary smaller canopy blob for volume
+  const c2 = colors[Math.floor(Math.random() * colors.length)];
+  const canopy2 = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(1.3, 1),
+    mat({ color: c2 }),
+  );
+  canopy2.position.set(0.5, 5.2, 0.3);
+  group.add(canopy2);
   return group;
 }
 
@@ -1507,7 +1528,7 @@ export function createRock(color?: number, secondaryColor?: number): THREE.Group
   const group = new THREE.Group();
   const rock = new THREE.Mesh(
     new THREE.DodecahedronGeometry(1.2 + Math.random() * 0.6, 0),
-    new THREE.MeshLambertMaterial({ color: color ?? 0x777777 }),
+    mat({ color: color ?? 0x777777 }),
   );
   rock.position.y = 0.6;
   rock.rotation.set(Math.random() * 0.3, Math.random() * Math.PI, Math.random() * 0.2);
@@ -1515,7 +1536,7 @@ export function createRock(color?: number, secondaryColor?: number): THREE.Group
   // Smaller secondary rock
   const rock2 = new THREE.Mesh(
     new THREE.DodecahedronGeometry(0.5 + Math.random() * 0.3, 0),
-    new THREE.MeshLambertMaterial({ color: secondaryColor ?? 0x888888 }),
+    mat({ color: secondaryColor ?? 0x888888 }),
   );
   rock2.position.set(1 + Math.random() * 0.5, 0.3, 0.5 * (Math.random() - 0.5));
   group.add(rock2);
@@ -1532,18 +1553,19 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
-  // Fuselage — rounded body
+  // Fuselage — organic rounded body
   const fuselage = new THREE.Mesh(
-    new THREE.BoxGeometry(2.0, 1.6, 3.5),
-    new THREE.MeshLambertMaterial({ color: 0x4a5a3a }),
+    new THREE.SphereGeometry(1.4, 6, 5),
+    mat({ color: 0x4a5a3a }),
   );
+  fuselage.scale.set(0.75, 0.6, 1.3);
   fuselage.position.set(0, 1.5, 0);
   group.add(fuselage);
 
-  // Cockpit — semi-transparent glass front
+  // Cockpit — semi-transparent glass dome
   const cockpit = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 1.0, 0.8),
-    new THREE.MeshLambertMaterial({ color: 0x88bbee, transparent: true, opacity: 0.5 }),
+    new THREE.SphereGeometry(0.7, 5, 4, 0, Math.PI * 2, 0, Math.PI / 2),
+    mat({ color: 0x88ccee, transparent: true, opacity: 0.5 }),
   );
   cockpit.position.set(0, 1.8, -1.8);
   group.add(cockpit);
@@ -1551,7 +1573,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Tail boom
   const tail = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.6, 3.5),
-    new THREE.MeshLambertMaterial({ color: 0x4a5a3a }),
+    mat({ color: 0x4a5a3a }),
   );
   tail.position.set(0, 1.5, 3.5);
   group.add(tail);
@@ -1559,7 +1581,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Tail fin (vertical)
   const tailFin = new THREE.Mesh(
     new THREE.BoxGeometry(0.1, 1.2, 0.8),
-    new THREE.MeshLambertMaterial({ color: c.primary }),
+    mat({ color: c.primary }),
   );
   tailFin.position.set(0, 2.2, 5.0);
   group.add(tailFin);
@@ -1567,7 +1589,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Tail rotor (small disc on side of tail fin)
   const tailRotor = new THREE.Mesh(
     new THREE.CylinderGeometry(0.6, 0.6, 0.05, 12),
-    new THREE.MeshLambertMaterial({ color: 0x888888, transparent: true, opacity: 0.4 }),
+    mat({ color: 0x888888, transparent: true, opacity: 0.4 }),
   );
   tailRotor.rotation.z = Math.PI / 2;
   tailRotor.position.set(0.3, 2.2, 5.0);
@@ -1577,7 +1599,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Main rotor mast
   const mast = new THREE.Mesh(
     new THREE.CylinderGeometry(0.15, 0.15, 0.6, 6),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }),
+    mat({ color: 0x333333 }),
   );
   mast.position.set(0, 2.6, 0);
   group.add(mast);
@@ -1585,14 +1607,14 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Main rotor disc (transparent spinning disc)
   const mainRotor = new THREE.Mesh(
     new THREE.CylinderGeometry(3.5, 3.5, 0.08, 24),
-    new THREE.MeshLambertMaterial({ color: 0x999999, transparent: true, opacity: 0.3 }),
+    mat({ color: 0x999999, transparent: true, opacity: 0.3 }),
   );
   mainRotor.position.set(0, 2.95, 0);
   mainRotor.name = 'mainRotor';
   group.add(mainRotor);
 
   // Skids (landing gear) — two parallel bars
-  const skidMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+  const skidMat = mat({ color: 0x333333 });
   const skidGeo = new THREE.BoxGeometry(0.12, 0.12, 3.0);
   const skidL = new THREE.Mesh(skidGeo, skidMat);
   skidL.position.set(-0.9, 0.06, 0);
@@ -1614,7 +1636,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Team color stripe
   const stripe = new THREE.Mesh(
     new THREE.BoxGeometry(0.05, 0.3, 3.5),
-    new THREE.MeshLambertMaterial({ color: c.light }),
+    mat({ color: c.light }),
   );
   stripe.position.set(1.02, 1.5, 0);
   group.add(stripe);
@@ -1629,14 +1651,14 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   // Pivot mount — allows the turret to rotate toward aim point
   const mountBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.2, 0.25, 0.25, 8),
-    new THREE.MeshLambertMaterial({ color: 0x333333 }),
+    mat({ color: 0x333333 }),
   );
   turretGroup.add(mountBase);
 
   // Barrel housing (rotating cluster)
   const barrelGroup = new THREE.Group();
   barrelGroup.name = 'barrelSpin';
-  const housingMat = new THREE.MeshLambertMaterial({ color: 0x222222 });
+  const housingMat = mat({ color: 0x222222 });
 
   // Central housing cylinder
   const housing = new THREE.Mesh(
@@ -1648,7 +1670,7 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   barrelGroup.add(housing);
 
   // Six barrels arranged in a circle
-  const barrelMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+  const barrelMat = mat({ color: 0x1a1a1a });
   for (let i = 0; i < 6; i++) {
     const angle = (i / 6) * Math.PI * 2;
     const bx = Math.cos(angle) * 0.1;
@@ -1703,7 +1725,7 @@ function groupToMesh(group: THREE.Group): THREE.Mesh {
 
   const hitbox = new THREE.Mesh(
     hitGeo,
-    new THREE.MeshLambertMaterial({ visible: false }),
+    mat({ visible: false }),
   );
 
   // Visual group keeps its original positions (built from ground up)

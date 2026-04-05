@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { MEADOW_MAP } from '@dyarchy/shared';
 import type { MapConfig } from '@dyarchy/shared';
+
+/** Low-poly flat-shaded material */
+function lpMat(props: THREE.MeshPhongMaterialParameters): THREE.MeshPhongMaterial {
+  return new THREE.MeshPhongMaterial({ flatShading: true, shininess: 0, ...props });
+}
 import {
   createMainBase,
   createTower,
@@ -176,22 +181,21 @@ export class SceneManager {
       posAttr.setY(i, th(x, z));
     }
     groundGeo.computeVertexNormals();
-    const groundMat = new THREE.MeshLambertMaterial({ map: groundTex });
+    const groundMat = lpMat({ map: groundTex });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.position.set(0, 0, 0);
     this.scene.add(ground);
 
     // ===================== Clouds =====================
-    const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+    const cloudMat = lpMat({ color: 0xffffff, transparent: true, opacity: 0.8 });
     for (let i = 0; i < theme.cloudCount; i++) {
       const cloudGroup = new THREE.Group();
-      const numBlobs = 3 + Math.floor(rand() * 3);
+      const numBlobs = 3 + Math.floor(rand() * 4);
       for (let b = 0; b < numBlobs; b++) {
-        const w = 4 + rand() * 8;
-        const h = 1.5 + rand() * 2;
-        const d = 3 + rand() * 5;
-        const blob = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), cloudMat);
-        blob.position.set((rand() - 0.5) * 6, rand() * 1, (rand() - 0.5) * 3);
+        const r = 2 + rand() * 4;
+        const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), cloudMat);
+        blob.position.set((rand() - 0.5) * 8, (rand() - 0.3) * 1.5, (rand() - 0.5) * 4);
+        blob.scale.set(1, 0.35 + rand() * 0.2, 1);
         cloudGroup.add(blob);
       }
       const cloudBaseY = mc.terrain.maxElevation + 15;
@@ -214,25 +218,27 @@ export class SceneManager {
 
       const terrainY = th(x, z);
       if (rand() < 0.85) {
-        const h = 0.3 + rand() * 0.5;
-        const geo = new THREE.BoxGeometry(0.15, h, 0.15);
-        const mat = new THREE.MeshLambertMaterial({
+        // Low-poly grass blade — triangular cone
+        const h = 0.3 + rand() * 0.6;
+        const geo = new THREE.ConeGeometry(0.08 + rand() * 0.06, h, 3);
+        const grassMat = lpMat({
           color: grassColors[Math.floor(rand() * grassColors.length)],
         });
-        const tuft = new THREE.Mesh(geo, mat);
+        const tuft = new THREE.Mesh(geo, grassMat);
         tuft.position.set(x, terrainY + h / 2, z);
         tuft.rotation.y = rand() * Math.PI;
         this.scene.add(tuft);
       } else {
+        // Low-poly flower — thin cone stem + icosahedron head
         const stem = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.03, 0.03, 0.4, 3),
-          new THREE.MeshLambertMaterial({ color: stemColor }),
+          new THREE.ConeGeometry(0.02, 0.4, 3),
+          lpMat({ color: stemColor }),
         );
         stem.position.set(x, terrainY + 0.2, z);
         this.scene.add(stem);
         const flower = new THREE.Mesh(
-          new THREE.SphereGeometry(0.12, 5, 5),
-          new THREE.MeshLambertMaterial({
+          new THREE.IcosahedronGeometry(0.1, 0),
+          lpMat({
             color: flowerColors[Math.floor(rand() * flowerColors.length)],
           }),
         );
@@ -245,7 +251,7 @@ export class SceneManager {
     const treePositions: [number, number][] = mc.edgeTrees.map(t => [t.x, t.z]);
 
     const edgeTrunkColor = mc.id === 'frostpeak' ? 0x443322 : 0x8B6914;
-    const treeTrunkMat = new THREE.MeshLambertMaterial({ color: edgeTrunkColor });
+    const treeTrunkMat = lpMat({ color: edgeTrunkColor });
     const edgeLeafColors = mc.id === 'frostpeak'
       ? [0x1a4a1a, 0x2a5a2a, 0x1a3a1a, 0xddeeff, 0xeeeeff]
       : [0x3da33d, 0x4aba4a, 0x6ac86a, 0xf0a0c0, 0xf0d060, 0x90d090];
@@ -261,30 +267,31 @@ export class SceneManager {
       treeGroup.add(trunk);
 
       const leafColor = edgeLeafColors[Math.floor(rand() * edgeLeafColors.length)];
-      const leafMat = new THREE.MeshLambertMaterial({ color: leafColor });
-      const layers = 2 + Math.floor(rand() * 2);
-      for (let l = 0; l < layers; l++) {
-        const size = 2.5 - l * 0.6 + rand() * 0.5;
+      const leafMat = lpMat({ color: leafColor });
+      // Round low-poly canopy — 2-3 overlapping icosahedrons
+      const canopies = 2 + Math.floor(rand() * 2);
+      for (let l = 0; l < canopies; l++) {
+        const r = 1.8 - l * 0.4 + rand() * 0.5;
         const foliage = new THREE.Mesh(
-          new THREE.BoxGeometry(size, 1.2 + rand() * 0.8, size),
+          new THREE.IcosahedronGeometry(r, 1),
           leafMat,
         );
         foliage.position.set(
-          (rand() - 0.5) * 0.5,
-          trunkH + l * 1.0 + 0.5,
-          (rand() - 0.5) * 0.5,
+          (rand() - 0.5) * 0.6,
+          trunkH + l * 0.8 + r * 0.5,
+          (rand() - 0.5) * 0.6,
         );
-        foliage.rotation.y = rand() * Math.PI;
         treeGroup.add(foliage);
       }
 
       // Snow cap on top for frostpeak edge trees
       if (mc.id === 'frostpeak') {
         const snowCap = new THREE.Mesh(
-          new THREE.BoxGeometry(2.0 + rand() * 0.5, 0.3, 2.0 + rand() * 0.5),
-          new THREE.MeshLambertMaterial({ color: 0xeeeeff }),
+          new THREE.IcosahedronGeometry(1.2 + rand() * 0.4, 1),
+          lpMat({ color: 0xeeeeff }),
         );
-        snowCap.position.y = trunkH + layers * 1.0 + 0.8;
+        snowCap.scale.set(1, 0.25, 1);
+        snowCap.position.y = trunkH + canopies * 0.8 + 1.2;
         treeGroup.add(snowCap);
       }
 
@@ -300,7 +307,7 @@ export class SceneManager {
     }
 
     // ===================== Map Border =====================
-    const wallMat = new THREE.MeshLambertMaterial({ color: theme.wallColor });
+    const wallMat = lpMat({ color: theme.wallColor });
     const wallHeight = 1.5;
     const wallThickness = 0.8;
 
@@ -358,8 +365,8 @@ export class SceneManager {
     // ===================== Tunnel Geometry =====================
     if (mc.tunnels) {
       for (const tunnel of mc.tunnels) {
-        const tunnelMat = new THREE.MeshLambertMaterial({ color: 0x332820, side: THREE.DoubleSide });
-        const entranceMat = new THREE.MeshLambertMaterial({ color: 0x221810 });
+        const tunnelMat = lpMat({ color: 0x332820, side: THREE.DoubleSide });
+        const entranceMat = lpMat({ color: 0x221810 });
 
         for (const region of tunnel.regions) {
           const w = region.max.x - region.min.x;
