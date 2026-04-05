@@ -401,10 +401,12 @@ export class GameState {
     const e = entity as Entity;
     if (e.layerId === undefined) e.layerId = 0;
     this.entities.set(e.id, e);
+    this.invalidateEntityCache();
   }
 
   removeEntity(id: string): void {
     this.entities.delete(id);
+    this.invalidateEntityCache();
   }
 
   /** Assign each crystal node to the closest alive HQ for each team. */
@@ -455,10 +457,69 @@ export class GameState {
     return closest;
   }
 
-  getEntitiesByType(type: string, teamId?: TeamId): Entity[] {
-    const result: Entity[] = [];
+  // Entity cache by type+team — invalidated on addEntity/removeEntity
+  private entityCache = new Map<string, Entity[]>();
+  private entityCacheDirty = true;
+
+  private rebuildEntityCache(): void {
+    if (!this.entityCacheDirty) return;
+    this.entityCache.clear();
     for (const e of this.entities.values()) {
-      if (e.entityType === type && (teamId === undefined || e.teamId === teamId)) result.push(e);
+      if (e.hp <= 0) continue;
+      const key1 = e.entityType;
+      const key2 = `${e.entityType}_${e.teamId}`;
+      if (!this.entityCache.has(key1)) this.entityCache.set(key1, []);
+      this.entityCache.get(key1)!.push(e);
+      if (!this.entityCache.has(key2)) this.entityCache.set(key2, []);
+      this.entityCache.get(key2)!.push(e);
+    }
+    this.entityCacheDirty = false;
+  }
+
+  private invalidateEntityCache(): void { this.entityCacheDirty = true; }
+
+  getEntitiesByType(type: string, teamId?: TeamId): Entity[] {
+    this.rebuildEntityCache();
+    const key = teamId !== undefined ? `${type}_${teamId}` : type;
+    return this.entityCache.get(key) ?? [];
+  }
+
+  // ===================== Spatial Hash Grid =====================
+
+  private readonly GRID_CELL = 20;
+  private spatialGrid = new Map<number, Entity[]>();
+
+  /** Rebuild spatial grid from all alive mobile entities. Call once per tick. */
+  private rebuildSpatialGrid(): void {
+    this.spatialGrid.clear();
+    for (const e of this.entities.values()) {
+      if (e.hp <= 0) continue;
+      const key = this.gridKey(e.position.x, e.position.z);
+      let cell = this.spatialGrid.get(key);
+      if (!cell) { cell = []; this.spatialGrid.set(key, cell); }
+      cell.push(e);
+    }
+  }
+
+  private gridKey(x: number, z: number): number {
+    const cx = Math.floor(x / this.GRID_CELL) + 500; // offset to avoid negative keys
+    const cz = Math.floor(z / this.GRID_CELL) + 500;
+    return cx * 10000 + cz;
+  }
+
+  /** Query entities within radius of a point. Much faster than full scan. */
+  queryNearby(x: number, z: number, radius: number): Entity[] {
+    const result: Entity[] = [];
+    const cellRadius = Math.ceil(radius / this.GRID_CELL);
+    const cx0 = Math.floor(x / this.GRID_CELL) + 500;
+    const cz0 = Math.floor(z / this.GRID_CELL) + 500;
+    for (let dcx = -cellRadius; dcx <= cellRadius; dcx++) {
+      for (let dcz = -cellRadius; dcz <= cellRadius; dcz++) {
+        const cell = this.spatialGrid.get((cx0 + dcx) * 10000 + (cz0 + dcz));
+        if (cell) {
+          for (const e of cell) result.push(e);
+        }
+      }
     }
     return result;
   }
@@ -468,6 +529,8 @@ export class GameState {
   updateAll(dt: number): void {
     this.gameTime += dt;
     this.tick++;
+    this.rebuildSpatialGrid();
+    this.invalidateEntityCache(); // force rebuild on first access this tick
     this.updateWaves(dt);
     this.updateFighters(dt);
     this.updateWorkers(dt);
@@ -562,16 +625,15 @@ export class GameState {
       mobiles.push(e);
     }
 
-    for (let iter = 0; iter < 3; iter++) {
-      for (let i = 0; i < mobiles.length; i++) {
-        const a = mobiles[i];
-        for (let j = i + 1; j < mobiles.length; j++) {
-          const b = mobiles[j];
-
-          // Skip separation between a jeep and its own passengers (shouldn't be in list, but guard)
-          if (a.entityType === 'jeep' && inVehicleIds.has(b.id)) continue;
-          if (b.entityType === 'jeep' && inVehicleIds.has(a.id)) continue;
-          // Entities on different layers don't collide
+    // Use spatial grid for O(n) separation instead of O(n²)
+    const mobileSet = new Set(mobiles.map(m => m.id));
+    const SEP_RADIUS = SAME_TEAM_RADIUS * 2 + 1; // query radius slightly larger than max push distance
+    for (let iter = 0; iter < 2; iter++) { // 2 passes sufficient with spatial queries
+      for (const a of mobiles) {
+        const nearby = this.queryNearby(a.position.x, a.position.z, SEP_RADIUS);
+        for (const b of nearby) {
+          if (b.id <= a.id) continue; // avoid double-processing pairs
+          if (!mobileSet.has(b.id)) continue;
           if (a.layerId !== b.layerId) continue;
 
           const sameTeam = a.teamId === b.teamId;
@@ -580,9 +642,11 @@ export class GameState {
 
           const dx = a.position.x - b.position.x;
           const dz = a.position.z - b.position.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
+          const distSq = dx * dx + dz * dz;
+          if (distSq >= minDist * minDist) continue;
 
-          if (dist < minDist && dist > 0.001) {
+          const dist = Math.sqrt(distSq);
+          if (dist > 0.001) {
             const overlap = minDist - dist;
             const nx = dx / dist;
             const nz = dz / dist;
@@ -591,7 +655,7 @@ export class GameState {
             a.position.z += nz * push;
             b.position.x -= nx * push;
             b.position.z -= nz * push;
-          } else if (dist <= 0.001) {
+          } else {
             const angle = Math.random() * Math.PI * 2;
             a.position.x += Math.cos(angle) * 0.5;
             a.position.z += Math.sin(angle) * 0.5;
@@ -685,8 +749,7 @@ export class GameState {
     const PLAT_H = 9.5;
     let platformOffset = 0;
     const playerFeetY = player.position.y - PLAYER_HEIGHT;
-    for (const ent of this.entities.values()) {
-      if (ent.entityType !== 'sniper_nest' || ent.hp <= 0) continue;
+    for (const ent of this.getEntitiesByType('sniper_nest')) {
       const dx = player.position.x - ent.position.x;
       const dz = player.position.z - ent.position.z;
       if (Math.abs(dx) < 2 && Math.abs(dz) < 2 && playerFeetY >= terrainY + PLAT_H - 1 && playerFeetY <= terrainY + PLAT_H + 3) {
@@ -914,7 +977,7 @@ export class GameState {
       let bestDist = towerRange;
       let foundFPS = false;
 
-      for (const ent of this.entities.values()) {
+      for (const ent of this.queryNearby(tower.position.x, tower.position.z, towerRange)) {
         if (ent.teamId === tower.teamId) continue;
         if (ent.hp <= 0) continue;
         if (ent.layerId !== tower.layerId) continue;
@@ -2758,13 +2821,14 @@ export class GameState {
   }
 
   private getEnemyTargets(teamId: TeamId): Entity[] {
-    const towers = [...this.entities.values()].filter(
-      e => e.entityType === 'tower' && e.teamId !== teamId && e.hp > 0,
-    );
-    if (towers.length > 0) return towers;
-    return [...this.entities.values()].filter(
-      e => e.entityType === 'main_base' && e.teamId !== teamId && e.hp > 0,
-    );
+    const towers: Entity[] = [];
+    const bases: Entity[] = [];
+    for (const e of this.entities.values()) {
+      if (e.teamId === teamId || e.hp <= 0) continue;
+      if (e.entityType === 'tower') towers.push(e);
+      else if (e.entityType === 'main_base') bases.push(e);
+    }
+    return towers.length > 0 ? towers : bases;
   }
 
   // ===================== Fighter AI =====================
@@ -3033,9 +3097,12 @@ export class GameState {
       if (entity?.entityType === 'farm' && entity.status === 'active') {
         this.teamSupply[entity.teamId].cap = Math.max(0, this.teamSupply[entity.teamId].cap - FARM_SUPPLY_BONUS);
       }
+      // Flag building destruction for win condition check
+      if (entity?.entityType === 'tower' || entity?.entityType === 'main_base') {
+        this.markBuildingDestroyed();
+      }
       // Reassign crystal nodes when an HQ is destroyed
       if (entity?.entityType === 'main_base') {
-        // Defer until after deletion loop
         toReassign = true;
       }
       this.entities.delete(id);
@@ -3043,13 +3110,26 @@ export class GameState {
     if (toReassign) this.reassignCrystalNodes();
   }
 
+  private buildingDestroyedSinceLastCheck = true; // check on first tick
+
+  /** Mark that a building was destroyed — triggers win check. */
+  markBuildingDestroyed(): void { this.buildingDestroyedSinceLastCheck = true; }
+
   checkWinCondition(): void {
+    // Only check when a building was actually destroyed (not every tick)
+    if (!this.buildingDestroyedSinceLastCheck) return;
+    this.buildingDestroyedSinceLastCheck = false;
+
     const alive: TeamId[] = [];
     for (const teamId of this.teamIds) {
-      const hasBuildings = [...this.entities.values()].some(
-        e => (e.entityType === 'tower' || e.entityType === 'main_base')
-          && e.teamId === teamId && e.hp > 0,
-      );
+      let hasBuildings = false;
+      for (const e of this.entities.values()) {
+        if ((e.entityType === 'tower' || e.entityType === 'main_base')
+          && e.teamId === teamId && e.hp > 0) {
+          hasBuildings = true;
+          break;
+        }
+      }
       if (hasBuildings) alive.push(teamId);
     }
     if (alive.length === 1) {
@@ -3067,7 +3147,7 @@ export class GameState {
     let closest: Entity | null = null;
     let closestDist = range;
     const unitIsGround = unit.entityType !== 'helicopter' && unit.entityType !== 'fps_player';
-    for (const e of this.entities.values()) {
+    for (const e of this.queryNearby(unit.position.x, unit.position.z, range)) {
       if (e.teamId === unit.teamId || e.hp <= 0 || !MOBILE_TYPES.has(e.entityType)) continue;
       if (e.layerId !== unit.layerId) continue;
       // Ground units can't target things more than 4 units above them (melee)
@@ -3214,7 +3294,7 @@ export class GameState {
       // If we've reversed too many times, we're oscillating — try a diagonal escape
       if (wf.reverseCount > 3) {
         // Try combining wall-follow with a bit of the target direction
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) {
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 3) {
           const ax = Math.cos(a), az = Math.sin(a);
           const escX = entity.position.x + ax * wfStep * 2;
           const escZ = entity.position.z + az * wfStep * 2;
@@ -3291,8 +3371,10 @@ export class GameState {
     const fromY = from.y + eyeHeight;
     const toY = to.y + eyeHeight;
 
-    // Check dynamic buildings (alive only)
-    for (const building of this.entities.values()) {
+    // Check dynamic buildings within range of the ray (spatial query)
+    const midX = (from.x + to.x) / 2, midZ = (from.z + to.z) / 2;
+    const queryR = distXZ / 2 + 10; // half the ray length + building radius margin
+    for (const building of this.queryNearby(midX, midZ, queryR)) {
       const col = BUILDING_COLLISION[building.entityType];
       if (!col || building.hp <= 0) continue;
       if (building.id === excludeId || building.id === excludeId2) continue;

@@ -36,6 +36,8 @@ export class GameRoom {
   private gameSpeed = 1;
   /** Last snapshot entity state per player, for delta compression */
   private lastSentEntities = new Map<string, Map<string, string>>(); // playerId -> (entityId -> JSON)
+  private entityHashCache = new Map<string, string>(); // entityId -> fast hash
+  private entityJsonCache = new Map<string, string>(); // entityId -> cached JSON string
   private deltaTickCounter = 0; // send full snapshot every N ticks
 
   /** Called when room status changes (for lobby broadcast). Set by index.ts. */
@@ -948,12 +950,27 @@ export class GameRoom {
     const sendFull = this.deltaTickCounter >= 100;
     if (sendFull) this.deltaTickCounter = 0;
 
-    // Pre-serialize each entity once for comparison
+    // Fast hash per entity — only re-serialize if hash changed
     const entityJsonMap = new Map<string, string>();
     for (const e of entities) {
-      entityJsonMap.set(e.id, JSON.stringify(e));
+      // Quick hash: position + hp + status are the most frequently changing fields
+      const hash = `${e.position.x.toFixed(2)},${e.position.y.toFixed(2)},${e.position.z.toFixed(2)},${e.hp},${e.status},${e.rotation.x.toFixed(2)},${e.rotation.y.toFixed(2)},${e.rotation.z.toFixed(2)},${e.constructionProgress.toFixed(2)}`;
+      const prevHash = this.entityHashCache.get(e.id);
+      if (prevHash === hash) {
+        // Unchanged — reuse cached JSON
+        const cached = this.entityJsonCache.get(e.id);
+        if (cached) { entityJsonMap.set(e.id, cached); continue; }
+      }
+      const json = JSON.stringify(e);
+      entityJsonMap.set(e.id, json);
+      this.entityHashCache.set(e.id, hash);
+      this.entityJsonCache.set(e.id, json);
     }
     const currentIds = new Set(entities.map(e => e.id));
+    // Clean up stale cache entries
+    for (const id of this.entityHashCache.keys()) {
+      if (!currentIds.has(id)) { this.entityHashCache.delete(id); this.entityJsonCache.delete(id); }
+    }
 
     for (const player of this.players.values()) {
       if (player.ws.readyState !== player.ws.OPEN) continue;
