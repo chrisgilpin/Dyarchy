@@ -34,7 +34,7 @@ import {
 } from '@dyarchy/shared';
 import { applyMovement, vec3 } from '@dyarchy/shared';
 import type { SnapshotEntity, FPSInputMsg, MapId } from '@dyarchy/shared';
-import { type MapConfig, getMapConfig, MEADOW_MAP, HeightmapGrid, dist3D } from '@dyarchy/shared';
+import { type MapConfig, getMapConfig, MEADOW_MAP, HeightmapGrid, dist3D, getTeamIds } from '@dyarchy/shared';
 
 // ===================== Entity Types =====================
 
@@ -301,29 +301,22 @@ function buildStaticObstacles(config: MapConfig): StaticObstacle[] {
 
 export class GameState {
   entities = new Map<string, Entity>();
-  teamResources: Record<number, number> = { 1: 1000, 2: 1000 };
-  teamSupply: Record<number, { used: number; cap: number }> = {
-    1: { used: 2, cap: 10 },
-    2: { used: 2, cap: 10 },
-  };
+  teamResources: Record<number, number> = {};
+  teamSupply: Record<number, { used: number; cap: number }> = {};
   trainingQueues = new Map<string, TrainingQueue>();
   towerTurrets = new Map<string, { targetId: string | null; fireCooldown: number }>();
   waveTimer = 90; // first wave at 1.5 minutes
-  wavesDisabled: Record<number, boolean> = { 1: false, 2: false };
+  wavesDisabled: Record<number, boolean> = {};
   unitsFrozen = false;
   instantBuild = false;
   turboJeep = false;
-  harvestBoost: Record<number, boolean> = { 1: false, 2: false };
-  // Hero Academy upgrades per team
-  heroHpLevel: Record<number, number> = { 1: 0, 2: 0 };    // 0-3
-  heroDmgLevel: Record<number, number> = { 1: 0, 2: 0 };   // 0-3
-  heroRegen: Record<number, boolean> = { 1: false, 2: false };
-  // Armory level 3 (independent from rockets) unlocks unit upgrades
-  armoryLevel3: Record<number, boolean> = { 1: false, 2: false };
-  // unitUpgradeLevel tracks per-team unit upgrade tier (0, 1, 2)
-  unitUpgradeLevel: Record<number, number> = { 1: 0, 2: 0 };
-  // Maps resource_node ID → closest main_base ID, per team
-  private nodeBaseAssignment: Record<number, Map<string, string>> = { 1: new Map(), 2: new Map() };
+  harvestBoost: Record<number, boolean> = {};
+  heroHpLevel: Record<number, number> = {};
+  heroDmgLevel: Record<number, number> = {};
+  heroRegen: Record<number, boolean> = {};
+  armoryLevel3: Record<number, boolean> = {};
+  unitUpgradeLevel: Record<number, number> = {};
+  private nodeBaseAssignment: Record<number, Map<string, string>> = {};
   gameTime = 0;
   tick = 0;
   winner: TeamId | null = null;
@@ -332,9 +325,27 @@ export class GameState {
   readonly heightmap: HeightmapGrid;
   private readonly staticObstacles: StaticObstacle[];
   private readonly mapBounds: { halfW: number; halfD: number };
+  private readonly teamIds: TeamId[];
+
+  /** Active team IDs for this game (derived from map config). */
+  get activeTeamIds(): readonly TeamId[] { return this.teamIds; }
 
   constructor(mapId: MapId = 'meadow') {
     this.mapConfig = getMapConfig(mapId);
+    this.teamIds = getTeamIds(this.mapConfig);
+    // Initialize per-team state dynamically
+    for (const t of this.teamIds) {
+      this.teamResources[t] = 1000;
+      this.teamSupply[t] = { used: 2, cap: 10 };
+      this.wavesDisabled[t] = false;
+      this.harvestBoost[t] = false;
+      this.heroHpLevel[t] = 0;
+      this.heroDmgLevel[t] = 0;
+      this.heroRegen[t] = false;
+      this.armoryLevel3[t] = false;
+      this.unitUpgradeLevel[t] = 0;
+      this.nodeBaseAssignment[t] = new Map();
+    }
     this.heightmap = new HeightmapGrid(this.mapConfig);
     this.staticObstacles = buildStaticObstacles(this.mapConfig);
     this.mapBounds = { halfW: this.mapConfig.width / 2, halfD: this.mapConfig.depth / 2 };
@@ -342,8 +353,8 @@ export class GameState {
   }
 
   private initMap(): void {
-    for (const teamId of [1, 2] as const) {
-      const buildings = this.mapConfig.initialBuildings[teamId];
+    for (const teamId of this.teamIds) {
+      const buildings = this.mapConfig.initialBuildings[teamId]!;
       const baseId = uuid();
       this.addEntity({
         id: baseId, entityType: 'main_base',
@@ -376,7 +387,7 @@ export class GameState {
     }
 
     // Starting workers for both teams
-    for (const teamId of [1, 2] as const) {
+    for (const teamId of this.teamIds) {
       const base = this.getTeamBase(teamId);
       if (base) {
         this.spawnWorker(teamId, base.position);
@@ -398,7 +409,7 @@ export class GameState {
 
   /** Assign each crystal node to the closest alive HQ for each team. */
   reassignCrystalNodes(): void {
-    for (const teamId of [1, 2] as const) {
+    for (const teamId of this.teamIds) {
       const bases = [...this.entities.values()].filter(
         e => e.entityType === 'main_base' && e.teamId === teamId && e.hp > 0 && e.status === 'active',
       );
@@ -643,7 +654,7 @@ export class GameState {
   // ===================== FPS Player =====================
 
   spawnFPSPlayer(teamId: TeamId): FPSPlayerEntity {
-    const spawn = this.mapConfig.teamSpawns[teamId];
+    const spawn = this.mapConfig.teamSpawns[teamId]!;
     const player: FPSPlayerEntity = {
       id: uuid(), entityType: 'fps_player',
       position: { x: spawn.x, y: this.heightmap.getHeight(spawn.x, spawn.z) + PLAYER_HEIGHT, z: spawn.z },
@@ -781,7 +792,7 @@ export class GameState {
       if (fps.isDead) {
         fps.respawnTimer -= dt;
         if (fps.respawnTimer <= 0) {
-          const spawn = this.mapConfig.teamSpawns[fps.teamId];
+          const spawn = this.mapConfig.teamSpawns[fps.teamId]!;
           fps.isDead = false;
           // Apply Hero Academy HP multiplier
           const hpLevel = this.heroHpLevel[fps.teamId] ?? 0;
@@ -899,7 +910,6 @@ export class GameState {
       const towerRange = TOWER_RANGE * levelMult * baseMult;
 
       // Find best target: prioritize enemy FPS player, then closest enemy mobile unit
-      const enemyTeam: TeamId = tower.teamId === 1 ? 2 : 1;
       let bestTarget: Entity | null = null;
       let bestDist = towerRange;
       let foundFPS = false;
@@ -2186,7 +2196,6 @@ export class GameState {
         turret.fireCooldown = Math.max(0, turret.fireCooldown - dt);
 
         // Find closest enemy within player_tower range (25 units)
-        const enemyTeam: TeamId = jeep.teamId === 1 ? 2 : 1;
         let bestTarget: Entity | null = null;
         let bestDist = TOWER_RANGE;
         for (const ent of this.entities.values()) {
@@ -2694,8 +2703,7 @@ export class GameState {
   private updateWaves(dt: number): void {
     this.waveTimer -= dt;
     if (this.waveTimer <= 0) {
-      this.spawnWave(1);
-      this.spawnWave(2);
+      for (const t of this.teamIds) this.spawnWave(t);
       this.waveTimer = WAVE_INTERVAL;
     }
   }
@@ -2750,13 +2758,12 @@ export class GameState {
   }
 
   private getEnemyTargets(teamId: TeamId): Entity[] {
-    const enemyTeam: TeamId = teamId === 1 ? 2 : 1;
     const towers = [...this.entities.values()].filter(
-      e => e.entityType === 'tower' && e.teamId === enemyTeam && e.hp > 0,
+      e => e.entityType === 'tower' && e.teamId !== teamId && e.hp > 0,
     );
     if (towers.length > 0) return towers;
     return [...this.entities.values()].filter(
-      e => e.entityType === 'main_base' && e.teamId === enemyTeam && e.hp > 0,
+      e => e.entityType === 'main_base' && e.teamId !== teamId && e.hp > 0,
     );
   }
 
@@ -3037,15 +3044,16 @@ export class GameState {
   }
 
   checkWinCondition(): void {
-    for (const teamId of [1, 2] as const) {
+    const alive: TeamId[] = [];
+    for (const teamId of this.teamIds) {
       const hasBuildings = [...this.entities.values()].some(
         e => (e.entityType === 'tower' || e.entityType === 'main_base')
           && e.teamId === teamId && e.hp > 0,
       );
-      if (!hasBuildings) {
-        this.winner = teamId === 1 ? 2 : 1;
-        return;
-      }
+      if (hasBuildings) alive.push(teamId);
+    }
+    if (alive.length === 1) {
+      this.winner = alive[0];
     }
   }
 

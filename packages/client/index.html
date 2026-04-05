@@ -219,40 +219,15 @@
           <div style="font-size:15px;font-weight:bold;">Ironhold Caverns</div>
           <div style="font-size:11px;color:#888;margin-top:2px;">300x180 — Volcanic ridges + tunnels</div>
         </button>
+        <button class="map-card" data-map="tri_arena" style="flex:1;padding:10px 14px;background:rgba(60,100,40,0.2);color:#fff;border:2px solid #334;border-radius:8px;cursor:pointer;text-align:center;font-family:system-ui,sans-serif;">
+          <div style="font-size:15px;font-weight:bold;">Tri-Arena</div>
+          <div style="font-size:11px;color:#888;margin-top:2px;">280x280 — 3-team FFA</div>
+        </button>
       </div>
     </div>
 
-    <!-- Team/Role selection grid -->
-    <div style="display:flex;gap:24px;margin:12px 0;">
-      <!-- Blue Team -->
-      <div style="border:2px solid #2255bb;border-radius:10px;padding:16px;min-width:180px;text-align:center;">
-        <div style="color:#4488dd;font-size:18px;font-weight:bold;margin-bottom:12px;">Blue Team</div>
-        <button class="lobby-slot" data-team="1" data-role="fps" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:rgba(34,85,187,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
-          FPS <span style="color:#888;font-size:12px;">— Shooter</span>
-          <div class="slot-player" style="color:#4488dd;font-size:12px;margin-top:4px;"></div>
-        </button>
-        <button class="cpu-toggle" data-team="1" data-role="fps" style="display:none;width:100%;padding:3px;margin-bottom:8px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
-        <button class="lobby-slot" data-team="1" data-role="rts" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:rgba(34,85,187,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
-          RTS <span style="color:#888;font-size:12px;">— Strategy</span>
-          <div class="slot-player" style="color:#4488dd;font-size:12px;margin-top:4px;"></div>
-        </button>
-        <button class="cpu-toggle" data-team="1" data-role="rts" style="display:none;width:100%;padding:3px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
-      </div>
-      <!-- Red Team -->
-      <div style="border:2px solid #bb2222;border-radius:10px;padding:16px;min-width:180px;text-align:center;">
-        <div style="color:#dd4444;font-size:18px;font-weight:bold;margin-bottom:12px;">Red Team</div>
-        <button class="lobby-slot" data-team="2" data-role="fps" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:rgba(187,34,34,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
-          FPS <span style="color:#888;font-size:12px;">— Shooter</span>
-          <div class="slot-player" style="color:#dd4444;font-size:12px;margin-top:4px;"></div>
-        </button>
-        <button class="cpu-toggle" data-team="2" data-role="fps" style="display:none;width:100%;padding:3px;margin-bottom:8px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
-        <button class="lobby-slot" data-team="2" data-role="rts" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:rgba(187,34,34,0.15);color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
-          RTS <span style="color:#888;font-size:12px;">— Strategy</span>
-          <div class="slot-player" style="color:#dd4444;font-size:12px;margin-top:4px;"></div>
-        </button>
-        <button class="cpu-toggle" data-team="2" data-role="rts" style="display:none;width:100%;padding:3px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
-      </div>
-    </div>
+    <!-- Team/Role selection grid (dynamically populated based on map) -->
+    <div id="team-slots" style="display:flex;gap:24px;margin:12px 0;flex-wrap:wrap;"></div>
 
     <button id="btn-ready" class="role-btn" style="min-width:200px;border-color:#0f0;">Ready</button>
     <div id="lobby-status" style="color:#888;font-size:13px;"></div>

@@ -595,7 +595,7 @@ export class AIPlayer {
   }
 
   private rtsCombat(state: GameState): void {
-    const enemyTeam: TeamId = this.teamId === 1 ? 2 : 1;
+    const isEnemy = (e: { teamId: TeamId }) => e.teamId !== this.teamId;
 
     const military = [
       ...state.getEntitiesByType('foot_soldier', this.teamId),
@@ -606,7 +606,7 @@ export class AIPlayer {
     const myBase = state.getTeamBase(this.teamId);
     if (myBase) {
       const nearbyEnemies = [...state.entities.values()].filter(
-        e => e.teamId === enemyTeam && e.hp > 0
+        e => isEnemy(e) && e.hp > 0
           && ['fps_player', 'fighter', 'foot_soldier', 'archer', 'jeep', 'helicopter'].includes(e.entityType)
           && this.distXZ(e.position, myBase.position) < 30,
       );
@@ -624,7 +624,7 @@ export class AIPlayer {
 
     // Attack: find enemy towers first, then HQ
     if (military.length >= this.preset.attackThreshold) {
-      const target = this.findAttackTarget(state, enemyTeam, myBase);
+      const target = this.findAttackTarget(state, myBase);
       if (target) {
         const idle = this.getIdleMilitary(military);
         for (const unit of idle) {
@@ -636,17 +636,17 @@ export class AIPlayer {
     }
   }
 
-  private findAttackTarget(state: GameState, enemyTeam: TeamId, myBase: Entity | undefined): Entity | null {
+  private findAttackTarget(state: GameState, myBase: Entity | undefined): Entity | null {
     const enemyTowers = [...state.entities.values()].filter(
-      e => e.teamId === enemyTeam && e.hp > 0
+      e => e.teamId !== this.teamId && e.hp > 0
         && (e.entityType === 'tower' || e.entityType === 'player_tower'),
     );
 
     if (enemyTowers.length > 0) {
-      // Attack nearest tower to our base
+      // Attack nearest enemy tower to our base
       let nearest = enemyTowers[0];
       let minDist = Infinity;
-      const ref = myBase?.position ?? state.mapConfig.teamSpawns[this.teamId];
+      const ref = myBase?.position ?? state.mapConfig.teamSpawns[this.teamId]!;
       for (const t of enemyTowers) {
         const d = this.distXZ(t.position, ref);
         if (d < minDist) { minDist = d; nearest = t; }
@@ -654,8 +654,17 @@ export class AIPlayer {
       return nearest;
     }
 
-    // All towers down — attack HQ
-    return state.getTeamBase(enemyTeam) ?? null;
+    // All towers down — attack nearest enemy HQ
+    let nearestBase: Entity | null = null;
+    let minBaseDist = Infinity;
+    const ref = myBase?.position ?? state.mapConfig.teamSpawns[this.teamId]!;
+    for (const e of state.entities.values()) {
+      if (e.entityType === 'main_base' && e.teamId !== this.teamId && e.hp > 0) {
+        const d = this.distXZ(e.position, ref);
+        if (d < minBaseDist) { minBaseDist = d; nearestBase = e; }
+      }
+    }
+    return nearestBase;
   }
 
   private getIdleMilitary(units: Entity[]): Entity[] {
@@ -724,8 +733,8 @@ export class AIPlayer {
     // Periodically swap weapons based on armory tier
     this.maybeSwapWeapon(state);
 
-    const enemyTeam: TeamId = this.teamId === 1 ? 2 : 1;
-    const target = this.findFPSTarget(state, fps, enemyTeam);
+    const isEnemy = (e: { teamId: TeamId }) => e.teamId !== this.teamId;
+    const target = this.findFPSTarget(state, fps);
 
     if (target) {
       const dist = dist3D(fps.position, target.position);
@@ -745,11 +754,11 @@ export class AIPlayer {
     }
   }
 
-  private findFPSTarget(state: GameState, fps: FPSPlayerEntity, enemyTeam: TeamId): Entity | null {
+  private findFPSTarget(state: GameState, fps: FPSPlayerEntity): Entity | null {
     // If currently being attacked, prioritize the attacker until they're dead
     if (fps.lastDamagedBy) {
       const attacker = state.entities.get(fps.lastDamagedBy);
-      if (attacker && attacker.hp > 0 && attacker.teamId === enemyTeam) {
+      if (attacker && attacker.hp > 0 && attacker.teamId !== this.teamId) {
         const dist = dist3D(fps.position, attacker.position);
         if (dist <= this.getWeaponRange()) return attacker;
       }
@@ -759,7 +768,7 @@ export class AIPlayer {
     const candidates: { entity: Entity; priority: number; dist: number }[] = [];
 
     for (const e of state.entities.values()) {
-      if (e.teamId !== enemyTeam || e.hp <= 0) continue;
+      if (e.teamId === this.teamId || e.hp <= 0) continue;
 
       let priority: number;
       // Base priority: towers → HQ → soldiers → fighters
@@ -848,23 +857,21 @@ export class AIPlayer {
   }
 
   private fpsMove(dt: number, state: GameState, fps: FPSPlayerEntity): void {
-    const enemyTeam: TeamId = this.teamId === 1 ? 2 : 1;
+    const isEnemy = (e: { teamId: TeamId }) => e.teamId !== this.teamId;
     let targetPos: Vec3;
 
     if (this.fpsState === 'retreat') {
       const myBase = state.getTeamBase(this.teamId);
-      targetPos = myBase ? myBase.position : state.mapConfig.teamSpawns[this.teamId];
+      targetPos = myBase ? myBase.position : state.mapConfig.teamSpawns[this.teamId]!;
     } else if (this.fpsTargetId) {
       const target = state.entities.get(this.fpsTargetId);
       if (target && target.hp > 0) {
         targetPos = target.position;
       } else {
-        const enemyBase = state.getTeamBase(enemyTeam);
-        targetPos = enemyBase ? enemyBase.position : state.mapConfig.teamSpawns[enemyTeam];
+        targetPos = this.nearestEnemyBasePos(state, fps.position);
       }
     } else {
-      const enemyBase = state.getTeamBase(enemyTeam);
-      targetPos = enemyBase ? enemyBase.position : state.mapConfig.teamSpawns[enemyTeam];
+      targetPos = this.nearestEnemyBasePos(state, fps.position);
     }
 
     const dx = targetPos.x - fps.position.x;
@@ -937,7 +944,7 @@ export class AIPlayer {
     const actions: string[] = [];
     const resources = state.teamResources[this.teamId];
     const supply = state.teamSupply[this.teamId];
-    const enemyTeam: TeamId = this.teamId === 1 ? 2 : 1;
+    const isEnemy = (e: { teamId: TeamId }) => e.teamId !== this.teamId;
 
     // 1. Economy
     const workers = state.getEntitiesByType('worker', this.teamId) as WorkerEntity[];
@@ -1053,14 +1060,14 @@ export class AIPlayer {
     const myBase = state.getTeamBase(this.teamId);
     if (myBase) {
       const nearbyEnemies = [...state.entities.values()].filter(
-        e => e.teamId === enemyTeam && e.hp > 0
+        e => isEnemy(e) && e.hp > 0
           && ['fps_player', 'fighter', 'foot_soldier', 'archer', 'jeep', 'helicopter'].includes(e.entityType)
           && this.distXZ(e.position, myBase.position) < 30,
       );
       if (nearbyEnemies.length > 0) {
         actions.push(`DEFEND: ${nearbyEnemies.length} enemies near base`);
       } else if (military.length >= this.preset.attackThreshold) {
-        const target = this.findAttackTarget(state, enemyTeam, myBase);
+        const target = this.findAttackTarget(state, myBase);
         if (target) {
           const label = target.entityType === 'main_base' ? 'enemy HQ' : 'enemy tower';
           actions.push(`ATTACK ${label} with ${military.length} units`);
@@ -1092,9 +1099,10 @@ export class AIPlayer {
    *  75% chance: placed between our closest-to-enemy building and the enemy HQ,
    *  within 40 units of that building. 25% chance: normal placement near our base. */
   private findTowerPosition(state: GameState): Vec3 | null {
-    const enemyTeam: TeamId = this.teamId === 1 ? 2 : 1;
-    const enemyBase = state.getTeamBase(enemyTeam);
-    if (!enemyBase || Math.random() > 0.75) {
+    const isEnemy = (e: { teamId: TeamId }) => e.teamId !== this.teamId;
+    const myBase = state.getTeamBase(this.teamId);
+    const nearestEnemy = this.findNearestEnemyBase(state, myBase?.position ?? state.mapConfig.teamSpawns[this.teamId]!);
+    if (!nearestEnemy || Math.random() > 0.75) {
       // 25% chance: normal placement near own base
       return this.findBuildPosition(state, 'tower');
     }
@@ -1105,14 +1113,14 @@ export class AIPlayer {
     for (const e of state.entities.values()) {
       if (e.teamId !== this.teamId || e.hp <= 0) continue;
       if (['worker', 'fighter', 'foot_soldier', 'archer', 'fps_player', 'jeep', 'helicopter', 'resource_node'].includes(e.entityType)) continue;
-      const d = this.distXZ(e.position, enemyBase.position);
+      const d = this.distXZ(e.position, nearestEnemy.position);
       if (d < closestDist) { closestDist = d; closestBuilding = e; }
     }
     if (!closestBuilding) return this.findBuildPosition(state, 'tower');
 
     // Place tower between that building and the enemy HQ, within 40 units
-    const dx = enemyBase.position.x - closestBuilding.position.x;
-    const dz = enemyBase.position.z - closestBuilding.position.z;
+    const dx = nearestEnemy.position.x - closestBuilding.position.x;
+    const dz = nearestEnemy.position.z - closestBuilding.position.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < 1) return this.findBuildPosition(state, 'tower');
 
@@ -1210,5 +1218,24 @@ export class AIPlayer {
     const dx = a.x - b.x;
     const dz = a.z - b.z;
     return Math.sqrt(dx * dx + dz * dz);
+  }
+
+  /** Find nearest enemy base entity. */
+  private findNearestEnemyBase(state: GameState, fromPos: Vec3): Entity | null {
+    let nearest: Entity | null = null;
+    let minDist = Infinity;
+    for (const e of state.entities.values()) {
+      if (e.entityType === 'main_base' && e.teamId !== this.teamId && e.hp > 0) {
+        const d = this.distXZ(e.position, fromPos);
+        if (d < minDist) { minDist = d; nearest = e; }
+      }
+    }
+    return nearest;
+  }
+
+  /** Get position of the nearest enemy base, fallback to own spawn. */
+  private nearestEnemyBasePos(state: GameState, fromPos: Vec3): Vec3 {
+    const base = this.findNearestEnemyBase(state, fromPos);
+    return base ? base.position : state.mapConfig.teamSpawns[this.teamId]!;
   }
 }

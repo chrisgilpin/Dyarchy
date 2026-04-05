@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import type { SnapshotMsg, SnapshotEntity } from '@dyarchy/shared';
+import type { SnapshotMsg, SnapshotEntity, TeamId } from '@dyarchy/shared';
+import { getTeamLabel } from '@dyarchy/shared';
 import type { SceneManager, SceneEntity } from '../renderer/SceneManager.js';
 import { SoundManager } from '../audio/SoundManager.js';
 // getTerrainHeight accessed via this.sceneManager.terrainHeight
@@ -9,7 +10,7 @@ import {
   createFPSPlayer, createFootSoldier, createGarage, createJeep, createHelicopter, createHeroAcademy,
 } from '../renderer/MeshFactory.js';
 
-type TeamId = 1 | 2;
+// TeamId imported from @dyarchy/shared
 
 const MESH_CREATORS: Record<string, (teamId: TeamId) => THREE.Mesh> = {
   main_base: (t) => createMainBase(t),
@@ -52,6 +53,10 @@ const BUILDING_COLLISION: Record<string, { hx: number; hy: number; hz: number; c
 // Entity types that should be interpolated (mobile units)
 const INTERPOLATED_TYPES = new Set(['worker', 'fighter', 'fps_player', 'foot_soldier', 'archer', 'jeep', 'helicopter']);
 
+// Reusable vectors for per-frame LOS checks (avoid GC pressure)
+const _losTarget = new THREE.Vector3();
+const _losDir = new THREE.Vector3();
+
 interface InterpState {
   prevPos: THREE.Vector3;
   nextPos: THREE.Vector3;
@@ -90,7 +95,7 @@ export class SnapshotRenderer {
   /** ID of the local FPS player entity — hidden when player is in FPS mode */
   localFPSEntityId: string | null = null;
   /** Local player's team */
-  localTeamId: 1 | 2 = 1;
+  localTeamId: TeamId = 1;
   /** Whether the local player is currently in FPS mode */
   isFPSMode = false;
   /** The layer the local player is on (0 = surface, >0 = underground) */
@@ -109,6 +114,7 @@ export class SnapshotRenderer {
   private losRaycaster = new THREE.Raycaster();
   private deadFPSPlayers = new Set<string>(); // track fps_players currently in death animation
   private walkPhase = new Map<string, number>(); // per-entity walk animation phase
+  private _losBlockers: THREE.Object3D[] | null = null; // cached for LOS raycasting
 
   // Hero visuals
   private heroIcons = new Map<string, THREE.Sprite>();
@@ -342,20 +348,22 @@ export class SnapshotRenderer {
         // In FPS mode, hide name if obstacle blocks line of sight from camera
         if (this.isFPSMode && id !== this.localFPSEntityId) {
           const cam = this.sceneManager.camera;
-          const targetPos = entity.mesh.position.clone().setY(entity.mesh.position.y + 1.5);
-          const dir = targetPos.clone().sub(cam.position).normalize();
+          const targetPos = _losTarget.set(entity.mesh.position.x, entity.mesh.position.y + 1.5, entity.mesh.position.z);
+          const dir = _losDir.copy(targetPos).sub(cam.position).normalize();
           const dist = cam.position.distanceTo(targetPos);
 
           this.losRaycaster.set(cam.position, dir);
           this.losRaycaster.far = dist;
-          // Check obstacles + building entity meshes for LOS blocking
-          const blockers: THREE.Object3D[] = [...this.sceneManager.obstacleMeshes];
-          for (const e of this.sceneManager.entities) {
-            if (!INTERPOLATED_TYPES.has(e.entityType) && e.entityType !== 'resource_node') {
-              blockers.push(e.mesh); // buildings block LOS
+          // Check cached LOS blockers (rebuilt on snapshot)
+          if (!this._losBlockers) {
+            this._losBlockers = [...this.sceneManager.obstacleMeshes];
+            for (const e of this.sceneManager.entities) {
+              if (!INTERPOLATED_TYPES.has(e.entityType) && e.entityType !== 'resource_node') {
+                this._losBlockers.push(e.mesh);
+              }
             }
           }
-          const hits = this.losRaycaster.intersectObjects(blockers, true);
+          const hits = this.losRaycaster.intersectObjects(this._losBlockers, true);
           if (hits.length > 0 && hits[0].distance < dist - 1) {
             label.visible = false;
           }
@@ -365,6 +373,7 @@ export class SnapshotRenderer {
   }
 
   applySnapshot(snapshot: SnapshotMsg): void {
+    this._losBlockers = null; // invalidate LOS cache — entities may have changed
     // Track timing for interpolation
     if (this.lastSnapshot) {
       // Use actual time between snapshots for smoother lerp
@@ -666,6 +675,9 @@ export class SnapshotRenderer {
           entity.mesh.traverse((child) => {
             if ((child as THREE.Mesh).isMesh) {
               (child as THREE.Mesh).geometry?.dispose();
+              const m = (child as THREE.Mesh).material;
+              if (Array.isArray(m)) m.forEach(mt => mt.dispose());
+              else if (m) (m as THREE.Material).dispose();
             }
           });
         }
@@ -731,7 +743,8 @@ export class SnapshotRenderer {
     ctx.lineWidth = 4;
     ctx.strokeText(name, 128, 32);
     // Team-colored fill
-    ctx.fillStyle = teamId === 1 ? '#66aaff' : '#ff6688';
+    const NAME_COLORS: Record<number, string> = { 1: '#66aaff', 2: '#ff6688', 3: '#66ff88' };
+    ctx.fillStyle = NAME_COLORS[teamId] ?? '#ffffff';
     ctx.fillText(name, 128, 32);
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -748,7 +761,7 @@ export class SnapshotRenderer {
   }
 
   private getEntityName(se: SnapshotEntity): string {
-    const teamLabel = se.teamId === 1 ? 'Blue' : 'Red';
+    const teamLabel = getTeamLabel(se.teamId);
     switch (se.entityType) {
       case 'main_base': return `${teamLabel} Headquarters`;
       case 'tower': return `${teamLabel} Tower`;

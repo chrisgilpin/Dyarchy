@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { MEADOW_MAP } from '@dyarchy/shared';
-import type { MapConfig } from '@dyarchy/shared';
+import { MEADOW_MAP, getTeamIds, getTeamLabel } from '@dyarchy/shared';
+import type { MapConfig, TeamId } from '@dyarchy/shared';
 
 /** Low-poly flat-shaded material */
 function lpMat(props: THREE.MeshPhongMaterialParameters): THREE.MeshPhongMaterial {
@@ -23,7 +23,7 @@ export interface SceneEntity {
   name: string;
   entityType: EntityType;
   mesh: THREE.Mesh;
-  teamId: 1 | 2;
+  teamId: TeamId;
   hp: number;
   maxHp: number;
   /** 'active' = ready, 'constructing' = still building */
@@ -186,65 +186,88 @@ export class SceneManager {
     ground.position.set(0, 0, 0);
     this.scene.add(ground);
 
-    // ===================== Clouds =====================
-    const cloudMat = lpMat({ color: 0xffffff, transparent: true, opacity: 0.8 });
-    for (let i = 0; i < theme.cloudCount; i++) {
-      const cloudGroup = new THREE.Group();
-      const numBlobs = 3 + Math.floor(rand() * 4);
-      for (let b = 0; b < numBlobs; b++) {
-        const r = 2 + rand() * 4;
-        const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), cloudMat);
-        blob.position.set((rand() - 0.5) * 8, (rand() - 0.3) * 1.5, (rand() - 0.5) * 4);
-        blob.scale.set(1, 0.35 + rand() * 0.2, 1);
-        cloudGroup.add(blob);
-      }
+    // ===================== Clouds (instanced) =====================
+    {
       const cloudBaseY = mc.terrain.maxElevation + 15;
-      cloudGroup.position.set(
-        (rand() - 0.5) * mc.width * 1.5,
-        cloudBaseY + rand() * 25,
-        (rand() - 0.5) * mc.depth * 1.5,
-      );
-      this.scene.add(cloudGroup);
-      this.clouds.push(cloudGroup);
+      const maxBlobs = theme.cloudCount * 7; // upper bound
+      const cloudGeo = new THREE.IcosahedronGeometry(1, 1);
+      const cloudMat = lpMat({ color: 0xffffff, transparent: true, opacity: 0.8 });
+      const cloudInstanced = new THREE.InstancedMesh(cloudGeo, cloudMat, maxBlobs);
+      let blobIdx = 0;
+      const dummy = new THREE.Object3D();
+      for (let i = 0; i < theme.cloudCount; i++) {
+        const cx = (rand() - 0.5) * mc.width * 1.5;
+        const cy = cloudBaseY + rand() * 25;
+        const cz = (rand() - 0.5) * mc.depth * 1.5;
+        const numBlobs = 3 + Math.floor(rand() * 4);
+        for (let b = 0; b < numBlobs; b++) {
+          const r = 2 + rand() * 4;
+          dummy.position.set(cx + (rand() - 0.5) * 8, cy + (rand() - 0.3) * 1.5, cz + (rand() - 0.5) * 4);
+          dummy.scale.set(r, r * (0.35 + rand() * 0.2), r);
+          dummy.updateMatrix();
+          cloudInstanced.setMatrixAt(blobIdx++, dummy.matrix);
+        }
+      }
+      cloudInstanced.count = blobIdx;
+      cloudInstanced.instanceMatrix.needsUpdate = true;
+      this.scene.add(cloudInstanced);
     }
 
-    // ===================== Grass Tufts & Flowers =====================
-    const grassColors = theme.grassColors;
-    const flowerColors = theme.flowerColors;
-    const stemColor = mc.id === 'frostpeak' ? 0x667766 : 0x3a7a2a;
-    for (let i = 0; i < theme.grassCount; i++) {
-      const x = (rand() - 0.5) * mc.width * 0.95;
-      const z = (rand() - 0.5) * mc.depth * 0.95;
+    // ===================== Grass & Flowers (instanced) =====================
+    {
+      const grassColors = theme.grassColors;
+      const flowerColors = theme.flowerColors;
+      const grassCount = theme.grassCount;
+      const dummy = new THREE.Object3D();
 
-      const terrainY = th(x, z);
-      if (rand() < 0.85) {
-        // Low-poly grass blade — triangular cone
-        const h = 0.3 + rand() * 0.6;
-        const geo = new THREE.ConeGeometry(0.08 + rand() * 0.06, h, 3);
-        const grassMat = lpMat({
-          color: grassColors[Math.floor(rand() * grassColors.length)],
-        });
-        const tuft = new THREE.Mesh(geo, grassMat);
-        tuft.position.set(x, terrainY + h / 2, z);
-        tuft.rotation.y = rand() * Math.PI;
-        this.scene.add(tuft);
-      } else {
-        // Low-poly flower — thin cone stem + icosahedron head
-        const stem = new THREE.Mesh(
-          new THREE.ConeGeometry(0.02, 0.4, 3),
-          lpMat({ color: stemColor }),
-        );
-        stem.position.set(x, terrainY + 0.2, z);
-        this.scene.add(stem);
-        const flower = new THREE.Mesh(
-          new THREE.IcosahedronGeometry(0.1, 0),
-          lpMat({
-            color: flowerColors[Math.floor(rand() * flowerColors.length)],
-          }),
-        );
-        flower.position.set(x, terrainY + 0.45, z);
-        this.scene.add(flower);
+      // Grass — one InstancedMesh per color
+      const grassGeo = new THREE.ConeGeometry(0.1, 0.5, 3);
+      for (const color of grassColors) {
+        const grassMat = lpMat({ color });
+        const instances = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
+        let count = 0;
+        for (let i = 0; i < Math.ceil(grassCount * 0.85 / grassColors.length); i++) {
+          const x = (rand() - 0.5) * mc.width * 0.95;
+          const z = (rand() - 0.5) * mc.depth * 0.95;
+          const terrainY = th(x, z);
+          const h = 0.3 + rand() * 0.6;
+          const r = 0.08 + rand() * 0.06;
+          dummy.position.set(x, terrainY + h / 2, z);
+          dummy.scale.set(r / 0.1, h / 0.5, r / 0.1);
+          dummy.rotation.set(0, rand() * Math.PI, 0);
+          dummy.updateMatrix();
+          instances.setMatrixAt(count++, dummy.matrix);
+        }
+        instances.count = count;
+        instances.instanceMatrix.needsUpdate = true;
+        this.scene.add(instances);
       }
+
+      // Flowers — instanced heads + instanced stems
+      const flowerCount = Math.ceil(grassCount * 0.15);
+      const stemGeo = new THREE.ConeGeometry(0.02, 0.4, 3);
+      const stemMat = lpMat({ color: mc.id === 'frostpeak' ? 0x667766 : 0x3a7a2a });
+      const stemInstances = new THREE.InstancedMesh(stemGeo, stemMat, flowerCount);
+      const headGeo = new THREE.IcosahedronGeometry(0.1, 0);
+      const headMat = lpMat({ color: flowerColors[0] });
+      const headInstances = new THREE.InstancedMesh(headGeo, headMat, flowerCount);
+      for (let i = 0; i < flowerCount; i++) {
+        const x = (rand() - 0.5) * mc.width * 0.95;
+        const z = (rand() - 0.5) * mc.depth * 0.95;
+        const terrainY = th(x, z);
+        dummy.position.set(x, terrainY + 0.2, z);
+        dummy.scale.set(1, 1, 1);
+        dummy.rotation.set(0, 0, 0);
+        dummy.updateMatrix();
+        stemInstances.setMatrixAt(i, dummy.matrix);
+        dummy.position.set(x, terrainY + 0.45, z);
+        dummy.updateMatrix();
+        headInstances.setMatrixAt(i, dummy.matrix);
+      }
+      stemInstances.instanceMatrix.needsUpdate = true;
+      headInstances.instanceMatrix.needsUpdate = true;
+      this.scene.add(stemInstances);
+      this.scene.add(headInstances);
     }
 
     // ===================== Decorative Trees (along map edges) =====================
@@ -443,9 +466,9 @@ export class SceneManager {
     if (skipEntities) return; // Online mode: server owns all game entities
 
     // Pre-placed buildings
-    for (const teamId of [1, 2] as const) {
-      const buildings = mc.initialBuildings[teamId];
-      const teamLabel = teamId === 1 ? 'Blue' : 'Red';
+    for (const teamId of getTeamIds(mc)) {
+      const buildings = mc.initialBuildings[teamId]!;
+      const teamLabel = getTeamLabel(teamId);
 
       const base = createMainBase(teamId);
       const baseH = th(buildings.mainBase.x, buildings.mainBase.z);
@@ -479,7 +502,7 @@ export class SceneManager {
       const node = createResourceNode();
       node.position.set(pos.x, th(pos.x, pos.z), pos.z);
       this.scene.add(node);
-      this.registerEntity(node, `Crystal Node ${i + 1}`, 'resource_node', 0 as 1 | 2, 3000, 3000);
+      this.registerEntity(node, `Crystal Node ${i + 1}`, 'resource_node', 0 as TeamId, 3000, 3000);
     }
   }
 
@@ -487,7 +510,7 @@ export class SceneManager {
     mesh: THREE.Mesh,
     name: string,
     entityType: EntityType,
-    teamId: 1 | 2,
+    teamId: TeamId,
     hp: number,
     maxHp: number,
     status: 'active' | 'constructing' = 'active',

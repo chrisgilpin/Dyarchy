@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { MAP_WIDTH, MAP_DEPTH } from '@dyarchy/shared';
+import type { TeamId } from '@dyarchy/shared';
 import type { SceneEntity } from '../renderer/SceneManager.js';
 
 // Vision ranges by entity type
@@ -49,11 +50,12 @@ export class FogOfWar {
   private fogResX: number;
   private fogResZ: number;
 
-  teamId: 1 | 2;
+  teamId: TeamId;
   enabled = true;
   private terrainHeightFn?: (x: number, z: number) => number;
+  private fogImageData: ImageData | null = null;
 
-  constructor(scene: THREE.Scene, teamId: 1 | 2 = 1, mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH, terrainHeightFn?: (x: number, z: number) => number) {
+  constructor(scene: THREE.Scene, teamId: TeamId = 1, mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH, terrainHeightFn?: (x: number, z: number) => number) {
     this.scene = scene;
     this.teamId = teamId;
     this.terrainHeightFn = terrainHeightFn;
@@ -109,6 +111,8 @@ export class FogOfWar {
     scene.add(this.mesh);
   }
 
+  private fogFrame = 0;
+
   /** Update fog based on friendly entity positions (only entities on the given layer) */
   update(entities: SceneEntity[], localLayerId: number = 0): void {
     if (!this.enabled) {
@@ -116,6 +120,9 @@ export class FogOfWar {
       return;
     }
     this.mesh.visible = true;
+
+    // Throttle: only recompute fog every 3 frames (~20Hz at 60fps)
+    if (++this.fogFrame % 3 !== 0) return;
 
     // Clear current visibility
     this.visibility.fill(UNEXPLORED);
@@ -217,7 +224,8 @@ export class FogOfWar {
 
   private renderFogTexture(): void {
     const ctx = this.ctx;
-    const imgData = ctx.createImageData(this.fogResX, this.fogResZ);
+    if (!this.fogImageData) this.fogImageData = ctx.createImageData(this.fogResX, this.fogResZ);
+    const imgData = this.fogImageData;
     const data = imgData.data;
 
     for (let z = 0; z < this.fogResZ; z++) {

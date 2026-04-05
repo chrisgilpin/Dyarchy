@@ -1,4 +1,5 @@
 import type { SceneEntity } from '../renderer/SceneManager.js';
+import type { TeamId } from '@dyarchy/shared';
 
 const MINIMAP_SIZE = 160; // px height; width scales to map aspect ratio
 const UNIT_DOT = 3;
@@ -19,7 +20,7 @@ export class Minimap {
   private readonly pixelW: number;
   private readonly pixelH: number;
 
-  localTeamId: 1 | 2 = 1;
+  localTeamId: TeamId = 1;
 
   // Camera viewport callback
   onClickWorld: ((x: number, z: number) => void) | null = null;
@@ -147,7 +148,8 @@ export class Minimap {
         }
       }
 
-      const color = isOwn ? '#4488ff' : '#ff4444';
+      const MINIMAP_COLORS: Record<number, string> = { 1: '#4488ff', 2: '#ff4444', 3: '#44dd44' };
+      const color = isOwn ? '#ffffff' : (MINIMAP_COLORS[e.teamId] ?? '#ff4444');
 
       if (BUILDING_TYPES.has(e.entityType)) {
         // Buildings: larger square
@@ -155,7 +157,8 @@ export class Minimap {
         ctx.fillRect(px - BUILDING_DOT / 2, py - BUILDING_DOT / 2, BUILDING_DOT, BUILDING_DOT);
       } else if (e.entityType === 'fps_player') {
         // FPS players: diamond shape
-        ctx.fillStyle = isOwn ? '#00ff00' : '#ff8800';
+        const FPS_COLORS: Record<number, string> = { 1: '#00aaff', 2: '#ff8800', 3: '#00ff00' };
+        ctx.fillStyle = isOwn ? '#00ff00' : (FPS_COLORS[e.teamId] ?? '#ff8800');
         ctx.beginPath();
         ctx.moveTo(px, py - 4);
         ctx.lineTo(px + 3, py);

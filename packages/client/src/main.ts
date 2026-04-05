@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { PLAYER_HEIGHT, GROUND_Y, getMapConfig, MEADOW_MAP } from '@dyarchy/shared';
+import { PLAYER_HEIGHT, GROUND_Y, getMapConfig, MEADOW_MAP, getTeamLabel, getTeamIds, TEAM_META } from '@dyarchy/shared';
 import type { ServerMessage, SnapshotMsg, RoomStateMsg, MapId } from '@dyarchy/shared';
-import type { MapConfig } from '@dyarchy/shared';
+import type { MapConfig, TeamId } from '@dyarchy/shared';
 import { SceneManager } from './renderer/SceneManager.js';
 import { FPSController } from './fps/FPSController.js';
 import { RTSController } from './rts/RTSController.js';
@@ -290,10 +290,11 @@ function showFighterLevelUp(level: number): void {
 
 // ===================== Game Init =====================
 
-function initOnlineGame(teamId: 1 | 2 = 1, mapConfig?: MapConfig): void {
+function initOnlineGame(teamId: TeamId = 1, mapConfig?: MapConfig): void {
   if (rtsController) rtsController.destroy();
   if (fpsController) fpsController.destroy();
   if (snapshotRenderer) snapshotRenderer.destroy();
+  if (sceneManager) sceneManager.destroy();
 
   const mc = mapConfig ?? MEADOW_MAP;
   // For online: create a bare scene (no pre-placed entities — server owns those)
@@ -302,7 +303,7 @@ function initOnlineGame(teamId: 1 | 2 = 1, mapConfig?: MapConfig): void {
   // Attach VR camera rig to the new scene
   vrManager.attachToScene(sceneManager.scene, sceneManager.camera);
 
-  const spawn = mc.teamSpawns[teamId];
+  const spawn = mc.teamSpawns[teamId]!;
   const spawnVec = new THREE.Vector3(spawn.x, sceneManager.terrainHeight(spawn.x, spawn.z) + PLAYER_HEIGHT, spawn.z);
 
   fpsController = new FPSController(
@@ -632,7 +633,7 @@ function handleServerMessage(msg: ServerMessage): void {
         rtsController.localTeamId = msg.yourTeam;
         rtsController.teamPlayerCount = msg.teamPlayerCount;
         // Center camera on team's base
-        const teamSpawn = getMapConfig(msg.mapId).teamSpawns[msg.yourTeam];
+        const teamSpawn = getMapConfig(msg.mapId).teamSpawns[msg.yourTeam]!;
         rtsController.setCameraCenter(teamSpawn.x, teamSpawn.z);
       }
       teamPlayerCount = msg.teamPlayerCount;
@@ -690,7 +691,7 @@ function handleServerMessage(msg: ServerMessage): void {
       break;
 
     case 'game_over': {
-      const teamName = msg.winnerTeam === 1 ? 'Blue Team' : 'Red Team';
+      const teamName = getTeamLabel(msg.winnerTeam) + ' Team';
       gameOverText.textContent = `${teamName} Wins!`;
       gameOverScreen.style.display = 'flex';
       if (activeRole === 'fps') fpsController.disable();
@@ -703,7 +704,7 @@ function handleServerMessage(msg: ServerMessage): void {
       if (rtsBrainOverlay) { rtsBrainOverlay.remove(); rtsBrainOverlay = null; }
       cheatRtsBrain = false;
       // Play win/lose sound
-      if (msg.winnerTeam === 1) SoundManager.instance().victory();
+      if (rtsController && msg.winnerTeam === rtsController.localTeamId) SoundManager.instance().victory();
       else SoundManager.instance().gameOver();
       // Show end-of-game awards
       if (msg.stats && msg.stats.length > 0) showEndGameAwards(msg.stats);
@@ -866,8 +867,9 @@ function handleRoomState(msg: RoomStateMsg): void {
   lobbyStatus.textContent = `Code: ${msg.roomCode}${msg.visibility === 'private' ? ' (Private)' : ''}`;
   playerCount = msg.players.length;
 
-  // Switch preview background when map selection changes
+  // Switch preview background and rebuild team slots when map changes
   switchPreviewMap(msg.mapId);
+  rebuildTeamSlots(msg.mapId);
 
   // Update map selection highlight
   const mapColors: Record<string, { active: string; border: string; inactive: string }> = {
@@ -875,6 +877,7 @@ function handleRoomState(msg: RoomStateMsg): void {
     frostpeak: { active: 'rgba(80,100,140,0.35)', border: '#68a', inactive: 'rgba(80,100,140,0.2)' },
     blood_canyon: { active: 'rgba(160,100,40,0.35)', border: '#a84', inactive: 'rgba(160,100,40,0.2)' },
     ironhold: { active: 'rgba(80,50,30,0.35)', border: '#a64', inactive: 'rgba(60,40,30,0.2)' },
+    tri_arena: { active: 'rgba(60,100,40,0.35)', border: '#6a4', inactive: 'rgba(60,100,40,0.2)' },
   };
   document.querySelectorAll('.map-card').forEach(card => {
     const mapId = card.getAttribute('data-map') ?? '';
@@ -902,7 +905,7 @@ function handleRoomState(msg: RoomStateMsg): void {
 
     if (playerInSlot) {
       nameEl.textContent = playerInSlot.name + (playerInSlot.ready ? ' [Ready]' : '');
-      (btn as HTMLElement).style.borderColor = slotTeam === 1 ? '#4488dd' : '#dd4444';
+      (btn as HTMLElement).style.borderColor = TEAM_META[slotTeam as TeamId]?.cssColor ?? '#4488dd';
       if (cpuBtn) cpuBtn.style.display = 'none';
     } else if (cpuDiff) {
       // CPU is filling this slot
@@ -958,16 +961,7 @@ visPrivateBtn.addEventListener('click', () => {
   visPublicBtn.style.color = '#888';
 });
 
-// Lobby slot selection — click a team/role slot to join it
-document.querySelectorAll('.lobby-slot').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const team = parseInt(btn.getAttribute('data-team')!) as 1 | 2;
-    const role = btn.getAttribute('data-role') as 'fps' | 'rts';
-    connection?.send({ type: 'select_role', team, role });
-  });
-});
-
-// CPU toggle buttons — cycle Off → Easy → Medium → Hard → Off
+// Dynamic lobby slot generation based on selected map's team count
 const cpuCycle: (string | null)[] = [null, 'easy', 'medium', 'hard'];
 const cpuLabels: Record<string, { text: string; color: string }> = {
   '': { text: 'CPU: Off', color: '#666' },
@@ -975,20 +969,56 @@ const cpuLabels: Record<string, { text: string; color: string }> = {
   'medium': { text: 'CPU: Medium', color: '#da4' },
   'hard': { text: 'CPU: Hard', color: '#d44' },
 };
-document.querySelectorAll('.cpu-toggle').forEach(btn => {
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const team = btn.getAttribute('data-team')!;
-    const role = btn.getAttribute('data-role')!;
-    const slot = `${team}_${role}`;
-    // Read current state from button text and advance to next
-    const currentText = btn.textContent?.trim() ?? '';
-    const currentKey = Object.entries(cpuLabels).find(([, v]) => v.text === currentText)?.[0] ?? '';
-    const idx = cpuCycle.indexOf(currentKey || null);
-    const next = cpuCycle[(idx + 1) % cpuCycle.length];
-    connection?.send({ type: 'configure_cpu', slot, difficulty: next } as any);
+
+function rebuildTeamSlots(mapId: MapId): void {
+  const container = document.getElementById('team-slots');
+  if (!container) return;
+  const mc = getMapConfig(mapId);
+  const teamIds = getTeamIds(mc);
+  container.innerHTML = '';
+  for (const teamId of teamIds) {
+    const meta = TEAM_META[teamId];
+    const teamDiv = document.createElement('div');
+    teamDiv.style.cssText = `border:2px solid ${meta.borderColor};border-radius:10px;padding:16px;min-width:160px;text-align:center;flex:1;`;
+    teamDiv.innerHTML = `
+      <div style="color:${meta.cssColor};font-size:18px;font-weight:bold;margin-bottom:12px;">${meta.label} Team</div>
+      <button class="lobby-slot" data-team="${teamId}" data-role="fps" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:${meta.bgInactive};color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+        FPS <span style="color:#888;font-size:12px;">— Shooter</span>
+        <div class="slot-player" style="color:${meta.cssColor};font-size:12px;margin-top:4px;"></div>
+      </button>
+      <button class="cpu-toggle" data-team="${teamId}" data-role="fps" style="display:none;width:100%;padding:3px;margin-bottom:8px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
+      <button class="lobby-slot" data-team="${teamId}" data-role="rts" style="display:block;width:100%;padding:10px;margin-bottom:2px;background:${meta.bgInactive};color:#fff;border:2px solid #334;border-radius:6px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;">
+        RTS <span style="color:#888;font-size:12px;">— Strategy</span>
+        <div class="slot-player" style="color:${meta.cssColor};font-size:12px;margin-top:4px;"></div>
+      </button>
+      <button class="cpu-toggle" data-team="${teamId}" data-role="rts" style="display:none;width:100%;padding:3px;background:transparent;color:#666;border:1px solid #333;border-radius:4px;cursor:pointer;font-size:11px;font-family:system-ui,sans-serif;">CPU: Off</button>
+    `;
+    container.appendChild(teamDiv);
+  }
+  // Attach click handlers
+  container.querySelectorAll('.lobby-slot').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const team = parseInt(btn.getAttribute('data-team')!) as TeamId;
+      const role = btn.getAttribute('data-role') as 'fps' | 'rts';
+      connection?.send({ type: 'select_role', team, role });
+    });
   });
-});
+  container.querySelectorAll('.cpu-toggle').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const team = btn.getAttribute('data-team')!;
+      const role = btn.getAttribute('data-role')!;
+      const slot = `${team}_${role}`;
+      const currentText = btn.textContent?.trim() ?? '';
+      const currentKey = Object.entries(cpuLabels).find(([, v]) => v.text === currentText)?.[0] ?? '';
+      const idx = cpuCycle.indexOf(currentKey || null);
+      const next = cpuCycle[(idx + 1) % cpuCycle.length];
+      connection?.send({ type: 'configure_cpu', slot, difficulty: next } as any);
+    });
+  });
+}
+// Build initial slots for default map
+rebuildTeamSlots('meadow');
 
 // Map selection — click a map card to select it
 document.querySelectorAll('.map-card').forEach(card => {
@@ -1245,8 +1275,9 @@ function updateRtsBrainOverlay(plans: Record<number, { name: string; actions: st
 
   let html = '';
   for (const [teamId, plan] of Object.entries(plans)) {
-    const teamColor = Number(teamId) === 1 ? '#4af' : '#f55';
-    const teamLabel = Number(teamId) === 1 ? 'Blue' : 'Red';
+    const TEAM_DBG_COLORS: Record<number, string> = { 1: '#4af', 2: '#f55', 3: '#4f4' };
+    const teamColor = TEAM_DBG_COLORS[Number(teamId)] ?? '#fff';
+    const teamLabel = getTeamLabel(Number(teamId) as TeamId);
     html += `<div style="background:rgba(0,0,0,0.8);border:1px solid ${teamColor};border-radius:6px;padding:8px 12px;margin-bottom:6px;">`;
     html += `<div style="color:${teamColor};font-weight:bold;margin-bottom:4px;">${teamLabel} RTS Brain — ${plan.name}</div>`;
     if (plan.actions.length === 0) {
@@ -1721,7 +1752,7 @@ document.getElementById('btn-play-again')!.addEventListener('click', () => {
 let previewScene: SceneManager | null = null;
 const previewCamera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.5, 500);
 let previewChangeTimer = 0;
-let previewMapId: MapId = (['meadow', 'frostpeak', 'blood_canyon', 'ironhold'] as MapId[])[Math.floor(Math.random() * 4)];
+let previewMapId: MapId = (['meadow', 'frostpeak', 'blood_canyon', 'ironhold', 'tri_arena'] as MapId[])[Math.floor(Math.random() * 5)];
 let previewMapConfig: MapConfig = getMapConfig(previewMapId);
 
 // Camera keyframes: each is a distinct viewpoint, scaled to map size

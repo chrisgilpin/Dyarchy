@@ -2,7 +2,7 @@ import type { Vec3, TeamId, TunnelConfig } from './types.js';
 
 // ===================== Types =====================
 
-export type MapId = 'meadow' | 'frostpeak' | 'blood_canyon' | 'ironhold';
+export type MapId = 'meadow' | 'frostpeak' | 'blood_canyon' | 'ironhold' | 'tri_arena';
 
 export interface TerrainLayer {
   freqX: number;
@@ -60,11 +60,11 @@ export interface MapConfig {
   description: string;
   width: number;
   depth: number;
-  teamSpawns: Record<TeamId, Vec3>;
-  initialBuildings: Record<TeamId, {
+  teamSpawns: Partial<Record<TeamId, Vec3>>;
+  initialBuildings: Partial<Record<TeamId, {
     mainBase: Vec3;
     towers: Vec3[];
-  }>;
+  }>>;
   obstacles: Vec3[];
   resourceNodes: Vec3[];
   vegetation: { pos: Vec3; type: 'tree' | 'rock' }[];
@@ -658,6 +658,147 @@ export const IRONHOLD_MAP: MapConfig = {
   ],
 };
 
+// ===================== Tri-Arena (3-team free-for-all) =====================
+
+// Triangle spawn positions: 3 teams at 120° intervals, radius 95
+const TRI_R = 95;
+const triSpawn = (angle: number): Vec3 => ({
+  x: Math.round(Math.cos(angle) * TRI_R),
+  y: 0,
+  z: Math.round(Math.sin(angle) * TRI_R),
+});
+const triBase = (angle: number, r = 102): Vec3 => ({
+  x: Math.round(Math.cos(angle) * r),
+  y: 0,
+  z: Math.round(Math.sin(angle) * r),
+});
+const triTower = (angle: number, offset: number, r = 80): Vec3 => ({
+  x: Math.round(Math.cos(angle + offset) * r),
+  y: 0,
+  z: Math.round(Math.sin(angle + offset) * r),
+});
+
+// Team angles: Blue at top (270°), Red at bottom-right (30°), Green at bottom-left (150°)
+const A1 = -Math.PI / 2;       // Blue: top
+const A2 = Math.PI / 6;        // Red: bottom-right
+const A3 = 5 * Math.PI / 6;    // Green: bottom-left
+const TOWER_SPREAD = 0.2;      // ~12 degrees offset for flanking towers
+
+export const TRI_ARENA_MAP: MapConfig = {
+  id: 'tri_arena',
+  name: 'Tri-Arena',
+  description: '280x280 — 3-team free-for-all',
+  width: 280,
+  depth: 280,
+  teamSpawns: {
+    1: triSpawn(A1),
+    2: triSpawn(A2),
+    3: triSpawn(A3),
+  },
+  initialBuildings: {
+    1: {
+      mainBase: triBase(A1),
+      towers: [triTower(A1, -TOWER_SPREAD), triTower(A1, TOWER_SPREAD)],
+    },
+    2: {
+      mainBase: triBase(A2),
+      towers: [triTower(A2, -TOWER_SPREAD), triTower(A2, TOWER_SPREAD)],
+    },
+    3: {
+      mainBase: triBase(A3),
+      towers: [triTower(A3, -TOWER_SPREAD), triTower(A3, TOWER_SPREAD)],
+    },
+  },
+  obstacles: [
+    // Center arena cover (hexagonal arrangement)
+    { x: 0, y: 0, z: -18 },
+    { x: 0, y: 0, z: 18 },
+    { x: -16, y: 0, z: -9 },
+    { x: 16, y: 0, z: -9 },
+    { x: -16, y: 0, z: 9 },
+    { x: 16, y: 0, z: 9 },
+    // Mid-field cover between bases
+    { x: 0, y: 0, z: -55 },
+    { x: -48, y: 0, z: 28 },
+    { x: 48, y: 0, z: 28 },
+  ],
+  resourceNodes: [
+    // Near-base safe nodes (2 per team)
+    { x: Math.round(Math.cos(A1 - 0.3) * 75), y: 0, z: Math.round(Math.sin(A1 - 0.3) * 75) },
+    { x: Math.round(Math.cos(A1 + 0.3) * 75), y: 0, z: Math.round(Math.sin(A1 + 0.3) * 75) },
+    { x: Math.round(Math.cos(A2 - 0.3) * 75), y: 0, z: Math.round(Math.sin(A2 - 0.3) * 75) },
+    { x: Math.round(Math.cos(A2 + 0.3) * 75), y: 0, z: Math.round(Math.sin(A2 + 0.3) * 75) },
+    { x: Math.round(Math.cos(A3 - 0.3) * 75), y: 0, z: Math.round(Math.sin(A3 - 0.3) * 75) },
+    { x: Math.round(Math.cos(A3 + 0.3) * 75), y: 0, z: Math.round(Math.sin(A3 + 0.3) * 75) },
+    // Contested center nodes (3, one between each pair of teams)
+    { x: Math.round(Math.cos((A1 + A2) / 2) * 40), y: 0, z: Math.round(Math.sin((A1 + A2) / 2) * 40) },
+    { x: Math.round(Math.cos((A2 + A3) / 2 + Math.PI) * 40), y: 0, z: Math.round(Math.sin((A2 + A3) / 2 + Math.PI) * 40) },
+    { x: Math.round(Math.cos((A3 + A1) / 2) * 40), y: 0, z: Math.round(Math.sin((A3 + A1) / 2) * 40) },
+  ],
+  vegetation: [
+    // Scattered trees and rocks between bases
+    { pos: { x: -50, y: 0, z: -70 }, type: 'tree' },
+    { pos: { x: 50, y: 0, z: -70 }, type: 'tree' },
+    { pos: { x: -80, y: 0, z: 30 }, type: 'tree' },
+    { pos: { x: 80, y: 0, z: 30 }, type: 'tree' },
+    { pos: { x: 0, y: 0, z: 80 }, type: 'tree' },
+    { pos: { x: -30, y: 0, z: -90 }, type: 'tree' },
+    { pos: { x: 30, y: 0, z: -90 }, type: 'tree' },
+    { pos: { x: -90, y: 0, z: 40 }, type: 'tree' },
+    { pos: { x: 90, y: 0, z: 40 }, type: 'tree' },
+    { pos: { x: -20, y: 0, z: 90 }, type: 'tree' },
+    { pos: { x: 20, y: 0, z: 90 }, type: 'tree' },
+    { pos: { x: -60, y: 0, z: -40 }, type: 'rock' },
+    { pos: { x: 60, y: 0, z: -40 }, type: 'rock' },
+    { pos: { x: -60, y: 0, z: 50 }, type: 'rock' },
+    { pos: { x: 60, y: 0, z: 50 }, type: 'rock' },
+    { pos: { x: 0, y: 0, z: -50 }, type: 'rock' },
+    { pos: { x: 0, y: 0, z: 50 }, type: 'rock' },
+    { pos: { x: -40, y: 0, z: 0 }, type: 'rock' },
+    { pos: { x: 40, y: 0, z: 0 }, type: 'rock' },
+  ],
+  edgeTrees: generateEdgeTrees(280, 280, 25, 33),
+  terrain: {
+    // Gentle circular arena with raised edges
+    maxElevation: 8,
+    flatCenterRadius: 0.35,
+    fadeWidth: 0.25,
+    layers: [
+      { freqX: 2.0, freqZ: 2.0, amp: 5, phaseX: 0, phaseZ: 0 },
+      { freqX: 3.5, freqZ: 3.5, amp: 3, phaseX: 1.0, phaseZ: 1.0 },
+      { freqX: 6.0, freqZ: 6.0, amp: 1, phaseX: 2.0, phaseZ: 0.5 },
+    ],
+  },
+  theme: {
+    // Ancient arena — warm stone tones, golden sunlight
+    groundBaseColor: '#8a9a6a',
+    groundPatchRGBRanges: { rMin: 100, rMax: 150, gMin: 120, gMax: 170, bMin: 60, bMax: 100 },
+    gridLineAlpha: 0,
+    skyTopColor: '#3a70bb',
+    skyMidColor: '#6aa8dd',
+    skyLowColor: '#aaccee',
+    skyHorizonColor: '#eee8d8',
+    fogColor: 0xd8ddc8,
+    fogNear: 80,
+    fogFar: 260,
+    ambientColor: 0xfff5d8,
+    ambientIntensity: 0.7,
+    sunColor: 0xffe8b0,
+    sunIntensity: 0.9,
+    fillColor: 0xd0e0ff,
+    fillIntensity: 0.3,
+    treeLeafColors: [0x338833, 0x449944, 0x55aa55],
+    treeTrunkColor: 0x775533,
+    rockColor: 0x998877,
+    rockSecondaryColor: 0xaa9988,
+    grassColors: [0x66aa44, 0x77bb55, 0x88cc66],
+    flowerColors: [0xffee44, 0xff8844, 0xff66aa, 0xbbddff],
+    grassCount: 400,
+    cloudCount: 10,
+    wallColor: 0x887766,
+  },
+};
+
 // ===================== Registry =====================
 
 export const MAP_CONFIGS: Record<MapId, MapConfig> = {
@@ -665,4 +806,5 @@ export const MAP_CONFIGS: Record<MapId, MapConfig> = {
   frostpeak: FROSTPEAK_MAP,
   blood_canyon: BLOOD_CANYON_MAP,
   ironhold: IRONHOLD_MAP,
+  tri_arena: TRI_ARENA_MAP,
 };

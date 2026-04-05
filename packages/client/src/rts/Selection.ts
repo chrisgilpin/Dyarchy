@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { TeamId } from '@dyarchy/shared';
 import type { RTSCamera } from './RTSCamera.js';
 import { SoundManager } from '../audio/SoundManager.js';
 import { getTerrainHeight as defaultTerrainHeight } from '../renderer/Terrain.js';
@@ -8,7 +9,7 @@ export interface Selectable {
   name: string;
   entityType: string;
   mesh: THREE.Mesh;
-  teamId: 1 | 2;
+  teamId: TeamId;
   hp: number;
   maxHp: number;
   status: 'active' | 'constructing';

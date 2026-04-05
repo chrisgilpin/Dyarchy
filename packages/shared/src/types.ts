@@ -15,7 +15,7 @@ export interface InputState {
   dt: number;
 }
 
-export type TeamId = 1 | 2;
+export type TeamId = 1 | 2 | 3;
 export type Role = 'fps' | 'rts';
 export type HeroType = 'tank' | 'healer' | 'mechanic';
 export type AIDifficulty = 'easy' | 'medium' | 'hard';

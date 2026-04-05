@@ -4,3 +4,4 @@ export * from './math.js';
 export * from './messages.js';
 export * from './maps.js';
 export * from './terrain.js';
+export * from './teams.js';

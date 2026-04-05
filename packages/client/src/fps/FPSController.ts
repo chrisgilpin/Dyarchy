@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { InputState } from '@dyarchy/shared';
+import type { InputState, TeamId } from '@dyarchy/shared';
 import { SoundManager } from '../audio/SoundManager.js';
 import {
   MOUSE_SENSITIVITY,
@@ -35,6 +35,7 @@ export class FPSController {
 
   private locked = false;
   private readonly canvas: HTMLCanvasElement;
+  private _eventCleanup: (() => void) | null = null;
   private readonly obstacleBoxes: { center: THREE.Vector3; halfSize: THREE.Vector3 }[];
   private readonly sceneManager: SceneManager;
   private readonly spawnPosition: THREE.Vector3;
@@ -77,7 +78,7 @@ export class FPSController {
   onHit: ((targetId: string, damage: number) => void) | null = null;
   /** When true, this controller doesn't create its own entity (server owns it) */
   isOnline = false;
-  localTeamId: 1 | 2 = 1;
+  localTeamId: TeamId = 1;
   /** Callback to send input to server (online mode) */
   onInput: ((keys: { forward: boolean; backward: boolean; left: boolean; right: boolean; jump: boolean }, yaw: number, pitch: number, dt: number) => void) | null = null;
   /** Callback to send arbitrary messages to server */
@@ -216,15 +217,11 @@ export class FPSController {
       this.playerMesh, 'FPS Player', 'fps_player', 1, this.hp, this.maxHp,
     );
 
-    // Event listeners
-    document.addEventListener('pointerlockchange', () => {
-      this.locked = document.pointerLockElement === canvas;
-    });
-
-    document.addEventListener('mousemove', (e) => {
+    // Event listeners (stored for cleanup in destroy())
+    const onPointerLock = () => { this.locked = document.pointerLockElement === canvas; };
+    const onMouseMove = (e: MouseEvent) => {
       if (!this.locked || this.armoryMenuVisible || this.vrGamepadInput) return;
       if (this.inVehicle && this.vehicleType === 'helicopter') {
-        // In helicopter: mouse moves the aim offset within the targeting circle
         const aimSensitivity = 0.03;
         this.heliAimX += e.movementX * aimSensitivity;
         this.heliAimZ -= e.movementY * aimSensitivity;
@@ -232,9 +229,7 @@ export class FPSController {
         if (dist > 3) {
           this.heliAimX *= 3 / dist;
           this.heliAimZ *= 3 / dist;
-          // Horizontal overflow: turn the helicopter
           this.yaw -= e.movementX * MOUSE_SENSITIVITY;
-          // Vertical overflow: adjust aim pitch (down = negative, looking below heli)
           this.heliAimPitch -= e.movementY * MOUSE_SENSITIVITY;
           this.heliAimPitch = Math.max(-0.6, Math.min(0.4, this.heliAimPitch));
         }
@@ -243,35 +238,43 @@ export class FPSController {
         this.pitch -= e.movementY * MOUSE_SENSITIVITY;
         this.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.pitch));
       }
-    });
-
-    document.addEventListener('keydown', (e) => {
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
       if (!this.enabled) return;
-      if (this.armoryMenuVisible) return; // menu is open, don't process game keys
+      if (this.armoryMenuVisible) return;
       this.onKey(e.code, true);
       this.onActionKey(e.code);
-    });
-    document.addEventListener('keyup', (e) => {
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
       if (!this.enabled) return;
       if (!this.armoryMenuVisible) this.onKey(e.code, false);
       this.onKeyUp(e.code);
-    });
-
-    document.addEventListener('mousedown', (e) => {
+    };
+    const onMouseDown = (e: MouseEvent) => {
       if (!this.enabled || !this.locked || this.isDead || this.armoryMenuVisible) return;
-      if (e.button === 0) {
-        this.heliMouseHeld = true;
-        this.tryShoot();
-      }
+      if (e.button === 0) { this.heliMouseHeld = true; this.tryShoot(); }
       if (e.button === 2) this.toggleScope();
-    });
+    };
+    const onMouseUp = (e: MouseEvent) => { if (e.button === 0) this.heliMouseHeld = false; };
+    const onContext = (e: Event) => e.preventDefault();
 
-    document.addEventListener('mouseup', (e) => {
-      if (e.button === 0) this.heliMouseHeld = false;
-    });
+    document.addEventListener('pointerlockchange', onPointerLock);
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('contextmenu', onContext);
 
-    // Prevent context menu on right click
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    this._eventCleanup = () => {
+      document.removeEventListener('pointerlockchange', onPointerLock);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('mouseup', onMouseUp);
+      canvas.removeEventListener('contextmenu', onContext);
+    };
 
     // Mobile touch controls
     if (this.mobile) {
@@ -407,6 +410,7 @@ export class FPSController {
 
   destroy(): void {
     this.disable();
+    if (this._eventCleanup) { this._eventCleanup(); this._eventCleanup = null; }
     this.hud.remove();
     this.respawnOverlay.remove();
     this.hitMarker.remove();
@@ -1481,7 +1485,7 @@ export class FPSController {
     this.hp = this.maxHp;
     this.respawnOverlay.style.display = 'none';
     SoundManager.instance().playerRespawn();
-    const spawn = this.sceneManager.mapConfig.teamSpawns[this.localTeamId];
+    const spawn = this.sceneManager.mapConfig.teamSpawns[this.localTeamId]!;
     this.position.set(spawn.x, this.sceneManager.terrainHeight(spawn.x, spawn.z) + PLAYER_HEIGHT, spawn.z);
     this.velocity = { x: 0, y: 0, z: 0 };
     if (this.playerEntity) this.playerEntity.hp = this.hp;

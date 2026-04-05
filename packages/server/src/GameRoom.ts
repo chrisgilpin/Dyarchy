@@ -1,6 +1,6 @@
 import type { WebSocket } from 'ws';
 import type { TeamId, Role, ClientMessage, ServerMessage, SnapshotMsg, FPSInputMsg, MapId, PlayerGameStats, AIDifficulty } from '@dyarchy/shared';
-import { TICK_RATE, TICK_INTERVAL_MS, HERO_ABILITY_MAX_CHARGE } from '@dyarchy/shared';
+import { TICK_RATE, TICK_INTERVAL_MS, HERO_ABILITY_MAX_CHARGE, getTeamIds, getTeamCount, getTeamLabel, getMapConfig, MAP_CONFIGS } from '@dyarchy/shared';
 import { GameState, type FPSPlayerEntity } from './GameState.js';
 import { AIPlayer } from './AIPlayer.js';
 
@@ -31,9 +31,7 @@ export class GameRoom {
   private pendingSwap: PendingSwap | null = null;
   private gameStats = new Map<string, PlayerGameStats>();
   private aiPlayers: AIPlayer[] = [];
-  private cpuSlots: Record<string, AIDifficulty | null> = {
-    '1_fps': null, '1_rts': null, '2_fps': null, '2_rts': null,
-  };
+  private cpuSlots: Record<string, AIDifficulty | null> = {};
   private rtsBrainDebug = false;
   private gameSpeed = 1;
   /** Last snapshot entity state per player, for delta compression */
@@ -47,16 +45,30 @@ export class GameRoom {
     this.code = code;
     this.roomName = roomName ?? `Room ${code}`;
     this.visibility = visibility ?? 'public';
+    this.rebuildCpuSlots();
   }
 
-  get isFull(): boolean { return this.players.size >= 4; }
+  private rebuildCpuSlots(): void {
+    const teamIds = getTeamIds(getMapConfig(this.mapId));
+    const newSlots: Record<string, AIDifficulty | null> = {};
+    for (const t of teamIds) {
+      for (const role of ['fps', 'rts'] as const) {
+        const key = `${t}_${role}`;
+        // Preserve existing slot config if it exists
+        newSlots[key] = this.cpuSlots[key] ?? null;
+      }
+    }
+    this.cpuSlots = newSlots;
+  }
+
+  get isFull(): boolean { return this.players.size >= getTeamCount(getMapConfig(this.mapId)) * 2; }
 
   toLobbyInfo(): import('@dyarchy/shared').LobbyRoomInfo {
     return {
       roomCode: this.code,
       roomName: this.roomName,
       playerCount: this.players.size,
-      maxPlayers: 4,
+      maxPlayers: getTeamCount(getMapConfig(this.mapId)) * 2,
       status: this.status,
       mapId: this.mapId,
     };
@@ -109,8 +121,9 @@ export class GameRoom {
         if (side === 'friendly') {
           this.state.wavesDisabled[player.team] = stopped;
         } else if (side === 'enemy') {
-          const enemyTeam = player.team === 1 ? 2 : 1;
-          this.state.wavesDisabled[enemyTeam] = stopped;
+          for (const t of this.state.activeTeamIds) {
+            if (t !== player.team) this.state.wavesDisabled[t] = stopped;
+          }
         }
       }
       return;
@@ -134,12 +147,12 @@ export class GameRoom {
       return;
     }
 
-    // Cheat: spawn jeep near blue (team 1) HQ
+    // Cheat: spawn jeep near each team's HQ
     if ((msg as any).type === 'cheat_spawn_jeep' && this.state) {
-      const base1 = this.state.mapConfig.initialBuildings[1].mainBase;
-      const base2 = this.state.mapConfig.initialBuildings[2].mainBase;
-      this.state.spawnJeep(1, base1);
-      this.state.spawnJeep(2, base2);
+      for (const t of this.state.activeTeamIds) {
+        const base = this.state.mapConfig.initialBuildings[t]?.mainBase;
+        if (base) this.state.spawnJeep(t, base);
+      }
       return;
     }
 
@@ -164,12 +177,12 @@ export class GameRoom {
       return;
     }
 
-    // Cheat: spawn helicopter near both HQs
+    // Cheat: spawn helicopter near each team's HQ
     if ((msg as any).type === 'cheat_spawn_heli' && this.state) {
-      const base1 = this.state.mapConfig.initialBuildings[1].mainBase;
-      const base2 = this.state.mapConfig.initialBuildings[2].mainBase;
-      this.state.spawnHelicopter(1, base1);
-      this.state.spawnHelicopter(2, base2);
+      for (const t of this.state.activeTeamIds) {
+        const base = this.state.mapConfig.initialBuildings[t]?.mainBase;
+        if (base) this.state.spawnHelicopter(t, base);
+      }
       return;
     }
 
@@ -178,7 +191,7 @@ export class GameRoom {
       if (this.status !== 'waiting') return;
       const slot = (msg as any).slot as string;
       const difficulty = (msg as any).difficulty as AIDifficulty | null;
-      if (['1_fps', '1_rts', '2_fps', '2_rts'].includes(slot)) {
+      if (Object.keys(this.cpuSlots).includes(slot)) {
         this.cpuSlots[slot] = difficulty;
         this.broadcastRoomState();
       }
@@ -364,10 +377,19 @@ export class GameRoom {
 
       case 'select_map':
         if (this.status !== 'waiting') return;
-        if (msg.mapId === 'meadow' || msg.mapId === 'frostpeak' || msg.mapId === 'blood_canyon' || msg.mapId === 'ironhold') {
+        if (msg.mapId in MAP_CONFIGS) {
+          const prevTeamIds = getTeamIds(getMapConfig(this.mapId));
           this.mapId = msg.mapId;
-          // Reset ready state when map changes
-          for (const p of this.players.values()) p.ready = false;
+          this.rebuildCpuSlots();
+          const newTeamIds = getTeamIds(getMapConfig(this.mapId));
+          // Clear team/role for players on teams that no longer exist
+          for (const p of this.players.values()) {
+            if (p.team && !newTeamIds.includes(p.team)) {
+              p.team = null;
+              p.role = null;
+            }
+            p.ready = false;
+          }
           this.cancelCountdown();
           this.broadcastRoomState();
         }
@@ -580,15 +602,16 @@ export class GameRoom {
     this.onStatusChange?.();
     this.state = new GameState(this.mapId);
 
-    // Create FPS player entities for both teams
-    const team1Fps = this.state.spawnFPSPlayer(1);
-    const team2Fps = this.state.spawnFPSPlayer(2);
+    // Create FPS player entities for all teams
+    const teamFpsEntities = new Map<TeamId, FPSPlayerEntity>();
+    for (const t of this.state.activeTeamIds) {
+      teamFpsEntities.set(t, this.state.spawnFPSPlayer(t));
+    }
 
     for (const player of this.players.values()) {
-      if (player.role === 'fps' && player.team === 1) {
-        player.fpsEntityId = team1Fps.id;
-      } else if (player.role === 'fps' && player.team === 2) {
-        player.fpsEntityId = team2Fps.id;
+      if (player.role === 'fps' && player.team) {
+        const fpsEnt = teamFpsEntities.get(player.team);
+        player.fpsEntityId = fpsEnt?.id ?? null;
       }
 
       const teamCount = [...this.players.values()].filter(p => p.team === player.team).length;
@@ -711,7 +734,7 @@ export class GameRoom {
     // Create AI players based on CPU slot config — one per role so each
     // respects its own difficulty setting
     this.aiPlayers = [];
-    for (const teamId of [1, 2] as const) {
+    for (const teamId of this.state.activeTeamIds) {
       const fpsDiff = this.cpuSlots[`${teamId}_fps`];
       const rtsDiff = this.cpuSlots[`${teamId}_rts`];
       const hasFpsHuman = [...this.players.values()].some(p => p.team === teamId && p.role === 'fps');
@@ -719,7 +742,8 @@ export class GameRoom {
 
       if (!hasFpsHuman && fpsDiff !== null) {
         const ai = new AIPlayer(teamId, fpsDiff, true, false);
-        ai.fpsEntityId = (teamId === 1 ? team1Fps : team2Fps).id;
+        const fpsEnt = teamFpsEntities.get(teamId);
+        ai.fpsEntityId = fpsEnt?.id ?? null;
         this.aiPlayers.push(ai);
         this.gameStats.set(ai.id, ai.stats);
       }
@@ -799,7 +823,7 @@ export class GameRoom {
     }
 
     // Announce to all players
-    const teamLabel = player.team === 1 ? 'Blue' : 'Red';
+    const teamLabel = getTeamLabel(player.team);
     this.broadcast({ type: 'chat', from: '', text: `${player.name} has joined the game (${teamLabel} Team)` });
 
     // Update teammate's teamPlayerCount awareness
@@ -853,7 +877,7 @@ export class GameRoom {
 
     this.state.updateAll(dt);
 
-    const trainingQueues: Record<number, { baseId: string; queue: { elapsed: number; duration: number; unitType?: string }[] }[]> = { 1: [], 2: [] };
+    const trainingQueues: Record<number, { baseId: string; queue: { elapsed: number; duration: number; unitType?: string }[] }[]> = Object.fromEntries(this.state.activeTeamIds.map(t => [t, [] as { baseId: string; queue: { elapsed: number; duration: number; unitType?: string }[] }[]]));
     for (const [, tq] of this.state.trainingQueues) {
       trainingQueues[tq.teamId].push({
         baseId: tq.baseId,
@@ -881,7 +905,7 @@ export class GameRoom {
           entity.killerEntityId = fpsEnt.lastDamagedBy;
           const killerEntity = this.state.entities.get(fpsEnt.lastDamagedBy);
           if (killerEntity) {
-            const teamLabel = killerEntity.teamId === 1 ? "Blue" : "Red";
+            const teamLabel = getTeamLabel(killerEntity.teamId);
             if (killerEntity.entityType === 'fps_player') {
               const killerPlayer = [...this.players.values()].find(p => p.fpsEntityId === killerEntity.id);
               const killerAI = !killerPlayer ? this.aiPlayers.find(ai => ai.fpsEntityId === killerEntity.id) : undefined;
@@ -905,10 +929,7 @@ export class GameRoom {
       type: 'snapshot' as const,
       tick: this.state.tick,
       teamResources: { ...this.state.teamResources },
-      teamSupply: {
-        1: { ...this.state.teamSupply[1] },
-        2: { ...this.state.teamSupply[2] },
-      },
+      teamSupply: Object.fromEntries(this.state.activeTeamIds.map(t => [t, { ...this.state!.teamSupply[t] }])),
       trainingQueues,
       waveTimer: this.state.waveTimer,
       gameTime: this.state.gameTime,

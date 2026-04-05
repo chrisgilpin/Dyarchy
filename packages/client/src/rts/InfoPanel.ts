@@ -1,4 +1,5 @@
 import type { Selectable } from './Selection.js';
+import type { TeamId } from '@dyarchy/shared';
 import { BUILDING_COSTS, type BuildingChoice } from './BuildPanel.js';
 
 export interface InfoPanelCallbacks {
@@ -48,7 +49,7 @@ export class InfoPanel {
   heroHpLevel = 0;
   heroDmgLevel = 0;
   heroRegenUnlocked = false;
-  localTeamId: 1 | 2 = 1;
+  localTeamId: TeamId = 1;
   barracksLevels: Map<string, number> = new Map();
   towerLevels: Map<string, number> = new Map();
   towerDualGuns: Set<string> = new Set();

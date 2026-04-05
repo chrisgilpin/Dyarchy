@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { TeamId } from '@dyarchy/shared';
 import { RTSCamera } from './RTSCamera.js';
 import { Selection } from './Selection.js';
 import { BuildPanel, type BuildingChoice, BUILDING_COSTS } from './BuildPanel.js';
@@ -143,7 +144,7 @@ export class RTSController {
   onServerMessage: ((msg: any) => void) | null = null;
 
   /** Which team the local player is on (1=blue, 2=red) */
-  localTeamId: 1 | 2 = 1;
+  localTeamId: TeamId = 1;
   teamPlayerCount = 1; // how many humans on this team (1 = solo, FPS controllable via RTS)
 
   private constructing: ConstructingBuilding[] = [];
@@ -1571,23 +1572,26 @@ export class RTSController {
     const MELEE_RANGE = 4;
 
     // Collect all fighters and grunts by team
-    const team1Mobile: { x: number; z: number; type: string }[] = [];
-    const team2Mobile: { x: number; z: number; type: string }[] = [];
-
+    const teamMobile = new Map<number, { x: number; z: number; type: string }[]>();
     for (const ent of entities) {
       if (ent.hp <= 0) continue;
       if (!RTSController.MOBILE_TYPES.has(ent.entityType)) continue;
       const entry = { x: ent.mesh.position.x, z: ent.mesh.position.z, type: ent.entityType };
-      if (ent.teamId === 1) team1Mobile.push(entry);
-      else team2Mobile.push(entry);
+      if (!teamMobile.has(ent.teamId)) teamMobile.set(ent.teamId, []);
+      teamMobile.get(ent.teamId)!.push(entry);
     }
 
-    // Find combat hotspots: any team1 unit within melee range of a team2 unit
+    // Find combat hotspots: any unit from different teams within melee range
     let playedFighter = false;
     let playedWorker = false;
+    const teamIds = [...teamMobile.keys()];
 
-    for (const a of team1Mobile) {
-      for (const b of team2Mobile) {
+    for (let i = 0; i < teamIds.length; i++) {
+      for (let j = i + 1; j < teamIds.length; j++) {
+        const groupA = teamMobile.get(teamIds[i])!;
+        const groupB = teamMobile.get(teamIds[j])!;
+        for (const a of groupA) {
+          for (const b of groupB) {
         const dx = a.x - b.x;
         const dz = a.z - b.z;
         if (dx * dx + dz * dz < MELEE_RANGE * MELEE_RANGE) {
@@ -1604,6 +1608,8 @@ export class RTSController {
           if (playedFighter && playedWorker) return;
         }
       }
+    }
+    }
     }
   }
 

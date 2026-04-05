@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { TeamId } from '@dyarchy/shared';
 
 /** Low-poly flat-shaded material — the core of the Windlands aesthetic */
 function mat(props: THREE.MeshPhongMaterialParameters): THREE.MeshPhongMaterial {
@@ -6,10 +7,11 @@ function mat(props: THREE.MeshPhongMaterialParameters): THREE.MeshPhongMaterial 
 }
 
 /** Team colors: blue team vs red team, with lighter/darker variants */
-const TEAM = {
+const TEAM: Record<TeamId, { primary: number; light: number; dark: number }> = {
   1: { primary: 0x3366cc, light: 0x5599ee, dark: 0x224488 },
   2: { primary: 0xcc3333, light: 0xee5555, dark: 0x991111 },
-} as const;
+  3: { primary: 0x33aa33, light: 0x55cc55, dark: 0x228822 },
+};
 
 /** Add eyes (and hidden X-eyes for death) to a unit at the given head position.
  *  eyeY = center Y of the head, faceZ = front face Z of the head */
@@ -54,7 +56,7 @@ function addEyes(group: THREE.Group, eyeY: number, faceZ: number, spacing = 0.08
 }
 
 /** Create a main base mesh — large building with a roof and door marking */
-export function createMainBase(teamId: 1 | 2): THREE.Mesh {
+export function createMainBase(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -113,7 +115,7 @@ export function createMainBase(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a tower mesh — tall cylinder with a rotating turret gun on top */
-export function createTower(teamId: 1 | 2): THREE.Mesh {
+export function createTower(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -193,7 +195,7 @@ export function createTower(teamId: 1 | 2): THREE.Mesh {
 
 /** Create a barracks mesh — low wide building with stripes */
 /** Create a farm mesh — small wooden building with crop field */
-export function createFarm(teamId: 1 | 2): THREE.Mesh {
+export function createFarm(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -227,7 +229,7 @@ export function createFarm(teamId: 1 | 2): THREE.Mesh {
   return groupToMesh(group);
 }
 
-export function createBarracks(teamId: 1 | 2): THREE.Mesh {
+export function createBarracks(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -258,7 +260,7 @@ export function createBarracks(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create an armory mesh — building with an anvil-shaped top */
-export function createArmory(teamId: 1 | 2): THREE.Mesh {
+export function createArmory(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -298,7 +300,7 @@ export function createArmory(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a hero academy — castle-like building with blue roofs, gold spires, and banners */
-export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
+export function createHeroAcademy(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
   const stone = 0xbbaa88;
@@ -389,7 +391,7 @@ export function createHeroAcademy(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a garage — rectangular building, larger than armory */
-export function createGarage(teamId: 1 | 2): THREE.Mesh {
+export function createGarage(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -452,7 +454,7 @@ export function createGarage(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a jeep vehicle — Warthog-style military jeep with mounted turret */
-export function createJeep(teamId: 1 | 2): THREE.Mesh {
+export function createJeep(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -602,7 +604,7 @@ export function createJeep(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a player tower mesh — smaller tower with team color */
-export function createPlayerTower(teamId: 1 | 2): THREE.Mesh {
+export function createPlayerTower(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -723,9 +725,9 @@ export function createResourceNode(): THREE.Mesh {
 }
 
 /** Create a worker mesh — construction worker with hard hat, overalls, and hammer. ~1.3 units tall */
-export function createWorker(teamId: 1 | 2): THREE.Mesh {
+export function createWorker(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
-  const overallColor = teamId === 1 ? 0x3366aa : 0xaa3333; // blue or red overalls
+  const overallColor = c.primary; // team-colored overalls
   const group = new THREE.Group();
 
   // Legs as groups (boot + overalls together, pivot at hip)
@@ -869,7 +871,7 @@ export function createWorker(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a fighter mesh — barbarian warrior with club, headband, leather vest. ~1.1 units tall */
-export function createFighter(teamId: 1 | 2): THREE.Mesh {
+export function createFighter(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1021,7 +1023,7 @@ export function createFighter(teamId: 1 | 2): THREE.Mesh {
 
 /** Create a foot soldier mesh — ranged combat unit with a gun. ~1.2 units tall */
 /** Create an archer mesh — ranged unit with bow. ~1.2 units tall */
-export function createArcher(teamId: 1 | 2): THREE.Mesh {
+export function createArcher(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1098,7 +1100,7 @@ export function createArcher(teamId: 1 | 2): THREE.Mesh {
   return groupToMesh(group);
 }
 
-export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
+export function createFootSoldier(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1157,7 +1159,7 @@ export function createFootSoldier(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create the FPS player mesh visible in RTS view. ~1.5 units tall (slightly taller than grunt) */
-export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
+export function createFPSPlayer(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1357,7 +1359,7 @@ export function createFPSPlayer(teamId: 1 | 2): THREE.Mesh {
 }
 
 /** Create a player-built turret — small platform with a rotating gun */
-export function createTurret(teamId: 1 | 2): THREE.Mesh {
+export function createTurret(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1434,7 +1436,7 @@ export function createObstacle(): THREE.Mesh {
 
 /** Create a decorative tree */
 /** Create a sniper nest — tall elevated platform with ladder for FPS player */
-export function createSniperNest(teamId: 1 | 2): THREE.Mesh {
+export function createSniperNest(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1549,7 +1551,7 @@ export function createRock(color?: number, secondaryColor?: number): THREE.Group
  *  The returned mesh has its origin at y=0 (ground level).
  *  Visual children keep their original y positions (feet near y=0). */
 /** Create a helicopter mesh */
-export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
+export function createHelicopter(teamId: TeamId): THREE.Mesh {
   const c = TEAM[teamId];
   const group = new THREE.Group();
 
@@ -1711,6 +1713,11 @@ export function createHelicopter(teamId: 1 | 2): THREE.Mesh {
   return groupToMesh(group);
 }
 
+/**
+ * Convert a group into a single mesh. Merges static children into one geometry
+ * using vertex colors (1 draw call). Named groups (turret, leg_l, etc.) are kept
+ * separate for animation. Falls back to wrapper if merging fails.
+ */
 function groupToMesh(group: THREE.Group): THREE.Mesh {
   const bounds = new THREE.Box3().setFromObject(group);
   const size = new THREE.Vector3();
@@ -1718,18 +1725,131 @@ function groupToMesh(group: THREE.Group): THREE.Mesh {
   const center = new THREE.Vector3();
   bounds.getCenter(center);
 
-  // Create hitbox geometry translated upward so it aligns with the visual,
-  // while the mesh origin stays at y=0 (ground level)
   const hitGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
   hitGeo.translate(0, center.y, 0);
 
-  const hitbox = new THREE.Mesh(
-    hitGeo,
-    mat({ visible: false }),
-  );
+  // Collect static meshes (no special name) for merging, keep named groups separate
+  const staticGeoms: THREE.BufferGeometry[] = [];
+  const keepChildren: THREE.Object3D[] = [];
 
-  // Visual group keeps its original positions (built from ground up)
+  group.updateMatrixWorld(true);
+
+  group.traverse((child) => {
+    if (child === group) return;
+    // Keep named groups/meshes for animation (turret, legs, weapon, eyes, muzzle, rotor, etc.)
+    if (child.name && child.name !== '') {
+      keepChildren.push(child);
+      return;
+    }
+    // Keep groups that have named children
+    if ((child as THREE.Group).isGroup) return;
+    if (!(child as THREE.Mesh).isMesh) return;
+    // Skip if parent is a named group (belongs to animation system)
+    let p = child.parent;
+    while (p && p !== group) {
+      if (p.name && p.name !== '') return; // inside named group, skip
+      p = p.parent;
+    }
+    const mesh = child as THREE.Mesh;
+    if (!mesh.geometry) return;
+    // Skip transparent/invisible meshes
+    const m = mesh.material as THREE.MeshPhongMaterial;
+    if (m.transparent || !m.visible) return;
+
+    // Clone geometry and apply world transform
+    const geo = mesh.geometry.clone();
+    geo.applyMatrix4(mesh.matrixWorld);
+
+    // Bake material color into vertex colors
+    const posCount = geo.attributes.position.count;
+    const colors = new Float32Array(posCount * 3);
+    const c = m.color;
+    for (let i = 0; i < posCount; i++) {
+      colors[i * 3] = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    staticGeoms.push(geo);
+  });
+
+  const hitbox = new THREE.Mesh(hitGeo, mat({ visible: false }));
+
+  if (staticGeoms.length > 1) {
+    // Merge static geometry into single mesh with vertex colors
+    try {
+      const merged = mergeBufferGeometries(staticGeoms);
+      if (merged) {
+        merged.computeVertexNormals();
+        const mergedMesh = new THREE.Mesh(merged, mat({ vertexColors: true }));
+        // Reset transform since geometry is in world space
+        hitbox.add(mergedMesh);
+        // Add back named groups
+        for (const child of keepChildren) {
+          if (child.parent === group) hitbox.add(child);
+        }
+        // Dispose cloned geometries
+        for (const g of staticGeoms) g.dispose();
+        return hitbox;
+      }
+    } catch { /* fallback */ }
+  }
+
+  // Fallback: keep original group
   hitbox.add(group);
-
   return hitbox;
+}
+
+/** Simple geometry merge — concatenates vertex buffers. */
+function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+  let totalVerts = 0;
+  let totalIndices = 0;
+  let hasIndex = true;
+  for (const g of geometries) {
+    totalVerts += g.attributes.position.count;
+    if (g.index) totalIndices += g.index.count;
+    else hasIndex = false;
+  }
+  if (totalVerts === 0) return null;
+
+  const positions = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+  const colors = new Float32Array(totalVerts * 3);
+  const indices = hasIndex ? new Uint32Array(totalIndices) : null;
+
+  let vOffset = 0, iOffset = 0;
+  for (const g of geometries) {
+    const pos = g.attributes.position;
+    const norm = g.attributes.normal;
+    const col = g.attributes.color;
+    for (let i = 0; i < pos.count; i++) {
+      positions[(vOffset + i) * 3] = pos.getX(i);
+      positions[(vOffset + i) * 3 + 1] = pos.getY(i);
+      positions[(vOffset + i) * 3 + 2] = pos.getZ(i);
+      if (norm) {
+        normals[(vOffset + i) * 3] = norm.getX(i);
+        normals[(vOffset + i) * 3 + 1] = norm.getY(i);
+        normals[(vOffset + i) * 3 + 2] = norm.getZ(i);
+      }
+      if (col) {
+        colors[(vOffset + i) * 3] = col.getX(i);
+        colors[(vOffset + i) * 3 + 1] = col.getY(i);
+        colors[(vOffset + i) * 3 + 2] = col.getZ(i);
+      }
+    }
+    if (indices && g.index) {
+      for (let i = 0; i < g.index.count; i++) {
+        indices[iOffset + i] = g.index.array[i] + vOffset;
+      }
+      iOffset += g.index.count;
+    }
+    vOffset += pos.count;
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  if (indices) merged.setIndex(new THREE.BufferAttribute(indices, 1));
+  return merged;
 }
