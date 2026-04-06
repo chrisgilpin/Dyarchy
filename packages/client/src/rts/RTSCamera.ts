@@ -28,8 +28,8 @@ export class RTSCamera {
     right: false,
   };
 
-  private mouseX = 0;
-  private mouseY = 0;
+  private mouseX = window.innerWidth / 2;  // center = no edge pan by default (fixes mobile)
+  private mouseY = window.innerHeight / 2;
 
   constructor(mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH) {
     this.halfW = mapWidth / 2;
