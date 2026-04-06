@@ -28,8 +28,9 @@ export class RTSCamera {
     right: false,
   };
 
-  private mouseX = window.innerWidth / 2;  // center = no edge pan by default (fixes mobile)
-  private mouseY = window.innerHeight / 2;
+  private mouseX = 0;
+  private mouseY = 0;
+  private hasMouseMoved = false; // don't edge-pan until mouse actually moves (fixes mobile)
 
   constructor(mapWidth = MAP_WIDTH, mapDepth = MAP_DEPTH) {
     this.halfW = mapWidth / 2;
@@ -86,6 +87,7 @@ export class RTSCamera {
   private onMouseMove = (e: MouseEvent): void => {
     this.mouseX = e.clientX;
     this.mouseY = e.clientY;
+    this.hasMouseMoved = true;
   };
 
   private onWheel = (e: WheelEvent): void => {
@@ -123,13 +125,15 @@ export class RTSCamera {
     if (this.keys.up) dz -= 1;
     if (this.keys.down) dz += 1;
 
-    // Edge pan
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    if (this.mouseX < EDGE_PAN_MARGIN) dx -= 1;
-    if (this.mouseX > w - EDGE_PAN_MARGIN) dx += 1;
-    if (this.mouseY < EDGE_PAN_MARGIN) dz -= 1;
-    if (this.mouseY > h - EDGE_PAN_MARGIN) dz += 1;
+    // Edge pan (only when a real mouse is present — skipped on mobile)
+    if (this.hasMouseMoved) {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (this.mouseX < EDGE_PAN_MARGIN) dx -= 1;
+      if (this.mouseX > w - EDGE_PAN_MARGIN) dx += 1;
+      if (this.mouseY < EDGE_PAN_MARGIN) dz -= 1;
+      if (this.mouseY > h - EDGE_PAN_MARGIN) dz += 1;
+    }
 
     const speed = PAN_SPEED * (this.zoom / 40);
     this.centerX += dx * speed * dt;
