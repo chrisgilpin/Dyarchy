@@ -74,16 +74,42 @@ export class Minimap {
     });
     // Prevent the click from propagating to game canvas
     this.canvas.addEventListener('click', (e) => e.stopPropagation());
+
+    // Touch support for minimap
+    this.canvas.addEventListener('touchstart', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      this.dragging = true;
+      if (e.touches.length > 0) this.handleTouch(e.touches[0]);
+    }, { passive: false });
+    this.canvas.addEventListener('touchmove', (e) => {
+      if (this.dragging && e.touches.length > 0) {
+        e.stopPropagation();
+        e.preventDefault();
+        this.handleTouch(e.touches[0]);
+      }
+    }, { passive: false });
+    this.canvas.addEventListener('touchend', (e) => {
+      e.stopPropagation();
+      this.dragging = false;
+    });
   }
 
   show(): void { this.container.style.display = 'block'; }
   hide(): void { this.container.style.display = 'none'; }
 
   private handleClick(e: MouseEvent): void {
+    this.handleInputAt(e.clientX, e.clientY);
+  }
+
+  private handleTouch(t: Touch): void {
+    this.handleInputAt(t.clientX, t.clientY);
+  }
+
+  private handleInputAt(clientX: number, clientY: number): void {
     const rect = this.canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
-    // Convert pixel to world coordinates
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
     const worldX = (px / this.pixelW - 0.5) * this.mapWidth;
     const worldZ = (py / this.pixelH - 0.5) * this.mapDepth;
     this.onClickWorld?.(worldX, worldZ);

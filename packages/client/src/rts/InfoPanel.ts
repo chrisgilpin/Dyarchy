@@ -69,11 +69,12 @@ export class InfoPanel {
   constructor() {
     this.el = document.createElement('div');
     this.el.id = 'info-panel';
+    const mobile = 'ontouchstart' in window && navigator.maxTouchPoints > 0;
     this.el.style.cssText = `
       position: fixed;
-      bottom: 80px;
-      left: 20px;
-      width: 260px;
+      bottom: ${mobile ? '60px' : '80px'};
+      left: ${mobile ? '10px' : '20px'};
+      width: ${mobile ? 'min(300px, 80vw)' : '260px'};
       padding: 14px;
       background: rgba(0,0,0,0.8);
       border: 1px solid #555;
@@ -83,6 +84,10 @@ export class InfoPanel {
       z-index: 15;
       display: none;
     `;
+    // Prevent touch events from reaching the game canvas
+    this.el.addEventListener('touchstart', (e) => e.stopPropagation());
+    this.el.addEventListener('touchmove', (e) => e.stopPropagation());
+    this.el.addEventListener('touchend', (e) => e.stopPropagation());
 
     this.nameEl = document.createElement('div');
     this.nameEl.style.cssText = 'font-size: 16px; font-weight: bold; margin-bottom: 10px;';
@@ -841,6 +846,8 @@ export class InfoPanel {
     btn.addEventListener('mousedown', (e) => e.stopPropagation());
     btn.addEventListener('mouseup', (e) => e.stopPropagation());
     btn.addEventListener('click', (e) => e.stopPropagation());
+    btn.addEventListener('touchstart', (e) => e.stopPropagation());
+    btn.addEventListener('touchend', (e) => e.stopPropagation());
     if (!disabled) {
       btn.addEventListener('mouseenter', () => { btn.style.borderColor = hoverColor; });
       btn.addEventListener('mouseleave', () => { btn.style.borderColor = '#666'; });

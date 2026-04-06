@@ -39,15 +39,17 @@ export class BuildPanel {
   constructor() {
     this.el = document.createElement('div');
     this.el.id = 'build-panel';
+    const mobile = 'ontouchstart' in window && navigator.maxTouchPoints > 0;
     this.el.style.cssText = `
       position: fixed;
       bottom: 20px;
       left: 50%;
       transform: translateX(-50%);
       display: none;
-      gap: 10px;
+      gap: ${mobile ? '6px' : '10px'};
       z-index: 15;
       font-family: system-ui, sans-serif;
+      ${mobile ? 'max-width:100vw;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 8px;' : ''}
     `;
 
     for (const [type, info] of Object.entries(BUILDING_INFO) as [BuildingChoice, typeof BUILDING_INFO[BuildingChoice]][]) {
@@ -68,6 +70,9 @@ export class BuildPanel {
       btn.addEventListener('mousedown', (e) => e.stopPropagation());
       btn.addEventListener('mouseup', (e) => e.stopPropagation());
       btn.addEventListener('click', (e) => { e.stopPropagation(); this.selectBuilding(type); });
+      // Touch: stop propagation to prevent canvas gesture handler from capturing
+      btn.addEventListener('touchstart', (e) => { e.stopPropagation(); });
+      btn.addEventListener('touchend', (e) => { e.stopPropagation(); e.preventDefault(); this.selectBuilding(type); });
       btn.addEventListener('mouseenter', () => {
         if (!btn.classList.contains('disabled')) btn.style.borderColor = '#0f0';
       });

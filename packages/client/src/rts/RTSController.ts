@@ -7,9 +7,11 @@ import { InfoPanel } from './InfoPanel.js';
 import { FogOfWar } from './FogOfWar.js';
 import { Minimap } from './Minimap.js';
 import { SoundManager } from '../audio/SoundManager.js';
-// getTerrainHeight accessed via this.sceneManager.terrainHeight
 import type { SceneManager, SceneEntity } from '../renderer/SceneManager.js';
 import { FlameEffect } from '../renderer/FlameEffect.js';
+import { RTSTouchHandler } from './RTSTouchHandler.js';
+import { RTSMobileHUD } from './RTSMobileHUD.js';
+import { isMobile } from '../fps/TouchControls.js';
 // MeshFactory imports removed — server creates all entities in online mode
 
 const GRID_SIZE = 4;
@@ -332,7 +334,16 @@ export class RTSController {
       display: none; gap: 4px; z-index: 15; font-family: system-ui, sans-serif;
     `;
     document.body.appendChild(this.groupBarEl);
+
+    // Mobile touch support
+    if (isMobile()) {
+      this.touchHandler = new RTSTouchHandler(canvas, this.rtsCamera, this, this.selection);
+      this.mobileHUD = new RTSMobileHUD(this, this.touchHandler);
+    }
   }
+
+  private touchHandler: RTSTouchHandler | null = null;
+  private mobileHUD: RTSMobileHUD | null = null;
 
   enable(): void {
     this.rtsCamera.enable();
@@ -357,6 +368,8 @@ export class RTSController {
     document.addEventListener('click', this.onClickPlace);
     document.addEventListener('contextmenu', this.onRightClick);
     document.addEventListener('keydown', this.onKeyDown);
+    this.touchHandler?.enable();
+    this.mobileHUD?.show();
   }
 
   disable(): void {
@@ -372,6 +385,8 @@ export class RTSController {
     document.removeEventListener('click', this.onClickPlace);
     document.removeEventListener('contextmenu', this.onRightClick);
     document.removeEventListener('keydown', this.onKeyDown);
+    this.touchHandler?.disable();
+    this.mobileHUD?.hide();
   }
 
   /** Clean up all DOM elements and 3D objects for restart */
@@ -401,6 +416,8 @@ export class RTSController {
     this.idleWorkerHud.remove();
     this.groupBarEl.remove();
     this.minimap.destroy();
+    this.touchHandler?.destroy();
+    this.mobileHUD?.destroy();
   }
 
   getWaveTimer(): number {
@@ -424,6 +441,7 @@ export class RTSController {
     this.updateFogOfWar();
     this.updateHealthBars();
     this.updateUnitPips();
+    this.mobileHUD?.update();
     this.updateUnitAnimations(dt);
     this.updateBuildingFlames(dt);
     this.updateRallyLines();
@@ -2630,6 +2648,45 @@ export class RTSController {
     this.sceneManager.scene.add(this.ghost);
     this.canvas.style.cursor = 'crosshair';
   }
+
+  // ===================== Public API for Touch Handler =====================
+
+  /** Issue a command at screen coordinates (replaces right-click for mobile). */
+  commandAt(screenX: number, screenY: number): void {
+    // Create a synthetic right-click event to reuse existing logic
+    const fakeEvent = { clientX: screenX, clientY: screenY, preventDefault: () => {} } as MouseEvent;
+    this.onRightClick(fakeEvent);
+  }
+
+  /** Move the building placement ghost to screen coordinates. */
+  moveGhostTo(screenX: number, screenY: number): void {
+    if (!this.ghost || !this.activeBuildType) return;
+    const worldPos = this.rtsCamera.screenToWorld(screenX, screenY);
+    if (!worldPos) return;
+    const snappedX = Math.round(worldPos.x / GRID_SIZE) * GRID_SIZE;
+    const snappedZ = Math.round(worldPos.z / GRID_SIZE) * GRID_SIZE;
+    this.ghost.position.set(snappedX, this.sceneManager.terrainHeight(snappedX, snappedZ), snappedZ);
+  }
+
+  /** Place the building at the ghost's current position. */
+  placeBuilding(): void {
+    if (!this.ghost || !this.activeBuildType) return;
+    const type = this.activeBuildType;
+    const cost = BUILDING_COSTS[type];
+    if (this.crystals < cost) { this.cancelPlacement(); return; }
+    const pos = this.ghost.position.clone();
+    if (this.onServerBuild) {
+      this.onServerBuild(type, { x: pos.x, y: pos.y, z: pos.z }, this.builderWorkerId ?? undefined);
+    }
+    this.spendCrystals(cost);
+    this.cancelPlacement();
+  }
+
+  /** Get the current building placement type (null if not placing). */
+  getActiveBuildType(): string | null { return this.activeBuildType; }
+
+  /** Public cancel for building placement. */
+  publicCancelPlacement(): void { this.cancelPlacement(); }
 
   private cancelPlacement(): void {
     if (this.ghost) {

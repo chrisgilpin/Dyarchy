@@ -90,11 +90,28 @@ export class RTSCamera {
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
-    this.zoom += e.deltaY > 0 ? ZOOM_SPEED : -ZOOM_SPEED;
+    this.setZoom(e.deltaY > 0 ? ZOOM_SPEED : -ZOOM_SPEED);
+  };
+
+  /** Programmatic zoom by delta (positive = zoom out, negative = zoom in). */
+  setZoom(delta: number): void {
+    this.zoom += delta;
     this.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, this.zoom));
     this.updateProjection();
     this.updateCameraTransform();
-  };
+  }
+
+  /** Get current zoom level. */
+  getZoom(): number { return this.zoom; }
+
+  /** Pan camera by world-unit offsets. */
+  panBy(dx: number, dz: number): void {
+    this.centerX += dx;
+    this.centerZ += dz;
+    this.centerX = Math.max(-this.halfW, Math.min(this.halfW, this.centerX));
+    this.centerZ = Math.max(-this.halfD, Math.min(this.halfD, this.centerZ));
+    this.updateCameraTransform();
+  }
 
   update(dt: number): void {
     let dx = 0;

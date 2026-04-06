@@ -249,6 +249,12 @@ export class Selection {
     this.dragBox.style.display = 'none';
   };
 
+  /** Public API for touch: select entity at screen coordinates (clears existing selection). */
+  selectAt(screenX: number, screenY: number, addToExisting = false): void {
+    if (!addToExisting) this.clearSelection();
+    this.clickSelect(screenX, screenY, false);
+  }
+
   private clickSelect(screenX: number, screenY: number, doubleClick = false): void {
     // Project each selectable to screen space and pick the closest to the click.
     // This correctly handles units at any terrain height.
