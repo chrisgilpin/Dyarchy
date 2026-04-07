@@ -513,14 +513,22 @@ export class FPSController {
       const dz = serverPos.z - this.position.z;
       const distSq = dx * dx + dy * dy + dz * dz;
 
+      // When the player is locally idle (no movement input, on ground), trust the
+      // client prediction and only correct large desyncs. This avoids the "ghost
+      // slide" caused by network latency: the server is still processing
+      // older "moving" inputs while the client has already stopped.
+      const isIdle = !this.keys.forward && !this.keys.backward
+        && !this.keys.left && !this.keys.right && this.onGround;
+      const minorThreshold = isIdle ? 4 : 0.04; // ignore <2 unit drift when idle
+
       if (distSq > 9) {
         // Major desync (> 3 units) — hard snap to server
         this.position.x = serverPos.x;
         this.position.y = serverPos.y;
         this.position.z = serverPos.z;
         this.velocity = { x: 0, y: 0, z: 0 };
-      } else if (distSq > 0.04) {
-        // Minor drift (> 0.2 units) — gentle correction
+      } else if (distSq > minorThreshold) {
+        // Drift correction — gentle when moving, only large when idle
         this.position.x += dx * 0.1;
         this.position.y += dy * 0.1;
         this.position.z += dz * 0.1;
