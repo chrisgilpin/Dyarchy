@@ -1714,9 +1714,9 @@ export function createHelicopter(teamId: TeamId): THREE.Mesh {
 }
 
 /**
- * Convert a group into a single mesh. Merges static children into one geometry
- * using vertex colors (1 draw call). Named groups (turret, leg_l, etc.) are kept
- * separate for animation. Falls back to wrapper if merging fails.
+ * Wrap a group of meshes in an invisible hitbox for raycasting.
+ * The returned mesh has its origin at y=0 (ground level).
+ * Visual children keep their original y positions (feet near y=0).
  */
 function groupToMesh(group: THREE.Group): THREE.Mesh {
   const bounds = new THREE.Box3().setFromObject(group);
@@ -1728,128 +1728,8 @@ function groupToMesh(group: THREE.Group): THREE.Mesh {
   const hitGeo = new THREE.BoxGeometry(size.x, size.y, size.z);
   hitGeo.translate(0, center.y, 0);
 
-  // Collect static meshes (no special name) for merging, keep named groups separate
-  const staticGeoms: THREE.BufferGeometry[] = [];
-  const keepChildren: THREE.Object3D[] = [];
-
-  group.updateMatrixWorld(true);
-
-  group.traverse((child) => {
-    if (child === group) return;
-    // Keep named groups/meshes for animation (turret, legs, weapon, eyes, muzzle, rotor, etc.)
-    if (child.name && child.name !== '') {
-      keepChildren.push(child);
-      return;
-    }
-    // Keep groups that have named children
-    if ((child as THREE.Group).isGroup) return;
-    if (!(child as THREE.Mesh).isMesh) return;
-    // Skip if parent is a named group (belongs to animation system)
-    let p = child.parent;
-    while (p && p !== group) {
-      if (p.name && p.name !== '') return; // inside named group, skip
-      p = p.parent;
-    }
-    const mesh = child as THREE.Mesh;
-    if (!mesh.geometry) return;
-    // Skip transparent/invisible meshes
-    const m = mesh.material as THREE.MeshPhongMaterial;
-    if (m.transparent || !m.visible) return;
-
-    // Clone geometry and apply world transform
-    const geo = mesh.geometry.clone();
-    geo.applyMatrix4(mesh.matrixWorld);
-
-    // Bake material color into vertex colors
-    const posCount = geo.attributes.position.count;
-    const colors = new Float32Array(posCount * 3);
-    const c = m.color;
-    for (let i = 0; i < posCount; i++) {
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
-    }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    staticGeoms.push(geo);
-  });
-
   const hitbox = new THREE.Mesh(hitGeo, mat({ visible: false }));
-
-  if (staticGeoms.length > 1) {
-    // Merge static geometry into single mesh with vertex colors
-    try {
-      const merged = mergeBufferGeometries(staticGeoms);
-      if (merged) {
-        merged.computeVertexNormals();
-        const mergedMesh = new THREE.Mesh(merged, mat({ vertexColors: true }));
-        // Reset transform since geometry is in world space
-        hitbox.add(mergedMesh);
-        // Add back named groups
-        for (const child of keepChildren) {
-          if (child.parent === group) hitbox.add(child);
-        }
-        // Dispose cloned geometries
-        for (const g of staticGeoms) g.dispose();
-        return hitbox;
-      }
-    } catch { /* fallback */ }
-  }
-
-  // Fallback: keep original group
   hitbox.add(group);
   return hitbox;
 }
 
-/** Simple geometry merge — concatenates vertex buffers. */
-function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
-  let totalVerts = 0;
-  let totalIndices = 0;
-  let hasIndex = true;
-  for (const g of geometries) {
-    totalVerts += g.attributes.position.count;
-    if (g.index) totalIndices += g.index.count;
-    else hasIndex = false;
-  }
-  if (totalVerts === 0) return null;
-
-  const positions = new Float32Array(totalVerts * 3);
-  const normals = new Float32Array(totalVerts * 3);
-  const colors = new Float32Array(totalVerts * 3);
-  const indices = hasIndex ? new Uint32Array(totalIndices) : null;
-
-  let vOffset = 0, iOffset = 0;
-  for (const g of geometries) {
-    const pos = g.attributes.position;
-    const norm = g.attributes.normal;
-    const col = g.attributes.color;
-    for (let i = 0; i < pos.count; i++) {
-      positions[(vOffset + i) * 3] = pos.getX(i);
-      positions[(vOffset + i) * 3 + 1] = pos.getY(i);
-      positions[(vOffset + i) * 3 + 2] = pos.getZ(i);
-      if (norm) {
-        normals[(vOffset + i) * 3] = norm.getX(i);
-        normals[(vOffset + i) * 3 + 1] = norm.getY(i);
-        normals[(vOffset + i) * 3 + 2] = norm.getZ(i);
-      }
-      if (col) {
-        colors[(vOffset + i) * 3] = col.getX(i);
-        colors[(vOffset + i) * 3 + 1] = col.getY(i);
-        colors[(vOffset + i) * 3 + 2] = col.getZ(i);
-      }
-    }
-    if (indices && g.index) {
-      for (let i = 0; i < g.index.count; i++) {
-        indices[iOffset + i] = g.index.array[i] + vOffset;
-      }
-      iOffset += g.index.count;
-    }
-    vOffset += pos.count;
-  }
-
-  const merged = new THREE.BufferGeometry();
-  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  if (indices) merged.setIndex(new THREE.BufferAttribute(indices, 1));
-  return merged;
-}

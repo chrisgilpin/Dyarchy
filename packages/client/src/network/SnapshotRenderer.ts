@@ -139,14 +139,11 @@ export class SnapshotRenderer {
 
       // Lerp position
       entity.mesh.position.lerpVectors(interp.prevPos, interp.nextPos, t);
-      // FPS players: server Y includes PLAYER_HEIGHT (1.5) — subtract it for mesh placement
-      // Only add back any extra Y from jumping
+      // FPS players: server Y is absolute world position of head (feet + PLAYER_HEIGHT).
+      // Mesh origin is at feet, so subtract PLAYER_HEIGHT.
       if (entity.entityType === 'fps_player') {
-        const terrainY = this.sceneManager.terrainHeight(entity.mesh.position.x, entity.mesh.position.z);
         const lerpedY = interp.prevPos.y + (interp.nextPos.y - interp.prevPos.y) * t;
-        // Server Y = terrainY + PLAYER_HEIGHT + jumpHeight. Mesh should be at terrainY + jumpHeight.
-        const jumpHeight = Math.max(0, lerpedY - 1.5); // subtract PLAYER_HEIGHT
-        entity.mesh.position.y = terrainY + jumpHeight;
+        entity.mesh.position.y = lerpedY - 1.5; // PLAYER_HEIGHT
       } else if (entity.entityType === 'jeep') {
         // Jeep airborne physics: maintain vertical velocity when terrain drops away
         const terrainY = this.sceneManager.terrainHeight(entity.mesh.position.x, entity.mesh.position.z);
@@ -314,24 +311,20 @@ export class SnapshotRenderer {
           const newPhase = phase + dt * speed * 0.8;
           this.walkPhase.set(id, newPhase);
           const swing = Math.sin(newPhase) * 0.5; // ±0.5 radians
-          const mergedMesh = entity.mesh;
-          const innerGroup = mergedMesh.children?.[0];
-          if (innerGroup) {
-            const legL = innerGroup.getObjectByName('leg_l');
-            const legR = innerGroup.getObjectByName('leg_r');
-            if (legL) legL.rotation.x = swing;
-            if (legR) legR.rotation.x = -swing;
-          }
+          // entity.mesh is the hitbox wrapper; children[0] is the original group containing leg_l/leg_r
+          const inner = entity.mesh.children?.[0] ?? entity.mesh;
+          const legL = inner.getObjectByName('leg_l');
+          const legR = inner.getObjectByName('leg_r');
+          if (legL) legL.rotation.x = swing;
+          if (legR) legR.rotation.x = -swing;
         } else {
           // Standing still — reset legs
           this.walkPhase.set(id, 0);
-          const innerGroup = entity.mesh.children?.[0];
-          if (innerGroup) {
-            const legL = innerGroup.getObjectByName('leg_l');
-            const legR = innerGroup.getObjectByName('leg_r');
-            if (legL) legL.rotation.x = 0;
-            if (legR) legR.rotation.x = 0;
-          }
+          const inner = entity.mesh.children?.[0] ?? entity.mesh;
+          const legL = inner.getObjectByName('leg_l');
+          const legR = inner.getObjectByName('leg_r');
+          if (legL) legL.rotation.x = 0;
+          if (legR) legR.rotation.x = 0;
         }
       }
     }
@@ -707,10 +700,9 @@ export class SnapshotRenderer {
 
   /** Toggle between alive eyes and X-eyes on a unit mesh. */
   private setEyeState(mesh: THREE.Object3D, dead: boolean): void {
-    const innerGroup = mesh.children?.[0];
-    if (!innerGroup) return;
-    const eyesAlive = innerGroup.getObjectByName('eyes_alive');
-    const eyesDead = innerGroup.getObjectByName('eyes_dead');
+    const inner = mesh.children?.[0] ?? mesh;
+    const eyesAlive = inner.getObjectByName('eyes_alive');
+    const eyesDead = inner.getObjectByName('eyes_dead');
     if (eyesAlive) eyesAlive.visible = !dead;
     if (eyesDead) eyesDead.visible = dead;
   }

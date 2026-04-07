@@ -1083,7 +1083,7 @@ export class GameState {
     const worker: WorkerEntity = {
       id: uuid(), entityType: 'worker',
       position: { x: nearPos.x + Math.cos(angle) * 6, y: this.heightmap.getHeight(nearPos.x + Math.cos(angle) * 6, nearPos.z + Math.sin(angle) * 6), z: nearPos.z + Math.sin(angle) * 6 },
-      rotation: vec3(), teamId, hp: 50, maxHp: 50,
+      rotation: vec3(), teamId, hp: 200, maxHp: 200,
       status: 'active', constructionProgress: 1,
       state: 'idle', targetId: null, buildTargetId: null, buildQueue: [],
       movePoint: null, harvestTimer: 0, carriedCrystals: 0, attackTimer: 0,

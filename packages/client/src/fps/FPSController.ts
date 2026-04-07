@@ -30,7 +30,7 @@ export class FPSController {
   private enabled = false;
 
   private readonly keys = {
-    forward: false, backward: false, left: false, right: false, jump: false,
+    forward: false, backward: false, left: false, right: false, jump: false, crouch: false,
   };
 
   private locked = false;
@@ -395,7 +395,7 @@ export class FPSController {
     this.enabled = false;
     this.resetScope();
     if (this.locked) document.exitPointerLock();
-    this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = false;
+    this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = this.keys.crouch = false;
     this.hud.style.display = 'none';
     this.respawnOverlay.style.display = 'none';
     this.waveTimerHud.style.display = 'none';
@@ -602,6 +602,7 @@ export class FPSController {
       case 'KeyA': this.keys.left = down; break;
       case 'KeyD': this.keys.right = down; break;
       case 'Space': this.keys.jump = down; break;
+      case 'ControlLeft': case 'ControlRight': this.keys.crouch = down; break;
       case 'ShiftLeft': case 'ShiftRight': this.shiftHeld = down; break;
     }
   }
@@ -1333,6 +1334,10 @@ export class FPSController {
       // Don't touch camera rotation — headset controls it
     } else {
       this.camera.position.copy(this.position);
+      // Crouch: lower the camera by 0.6 units (server position unchanged)
+      if (this.keys.crouch && this.onGround && !this.inVehicle) {
+        this.camera.position.y -= 0.6;
+      }
       const euler = new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ');
       this.camera.quaternion.setFromEuler(euler);
     }
@@ -2574,7 +2579,7 @@ export class FPSController {
       const nty = this.sceneManager.terrainHeight(np.x, np.z);
       this.position.set(np.x, nty + PLAYER_HEIGHT, np.z + 2.5);
       this.velocity = { x: 0, y: 0, z: 0 };
-      this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = false;
+      this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = this.keys.crouch = false;
       this.nestTeleportCooldown = 2.0;
       this.onServerMessage?.({ type: 'climb_nest', action: 'down', nestId: onPlatform.id });
       return;
@@ -2586,7 +2591,7 @@ export class FPSController {
       const nty = this.sceneManager.terrainHeight(np.x, np.z);
       this.position.set(np.x, nty + 9.5 + PLAYER_HEIGHT, np.z);
       this.velocity = { x: 0, y: 0, z: 0 };
-      this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = false;
+      this.keys.forward = this.keys.backward = this.keys.left = this.keys.right = this.keys.jump = this.keys.crouch = false;
       this.nestTeleportCooldown = 2.0;
       // Tell server to teleport us too
       this.onServerMessage?.({ type: 'climb_nest', action: 'up', nestId: nearNest.id });
